@@ -42,4 +42,23 @@ if [[ -z "$WT" ]] || ! command -v "$WT" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Codex hook stdin carries `cwd` (the session directory). Pin `-C` to that
+# path so a `cd` mid-session cannot retarget the marker (#3921). Missing or
+# empty `cwd` exits 0 without calling wt — falling through to the process
+# cwd is the bug. jq handles escaped paths; sed covers Git Bash on Windows
+# when jq is not installed.
+if [[ "${1:-}" == "--stdin-cwd" ]]; then
+    shift
+    payload=$(cat)
+    p=""
+    if command -v jq >/dev/null 2>&1; then
+        p=$(printf '%s' "$payload" | jq -er '.cwd // empty') || p=""
+    fi
+    if [[ -z "$p" ]]; then
+        p=$(printf '%s' "$payload" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    fi
+    [[ -n "$p" ]] || exit 0
+    exec "$WT" -C "$p" "$@"
+fi
+
 "$WT" "$@"

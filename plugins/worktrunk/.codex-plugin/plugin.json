@@ -16,8 +16,8 @@
           "hooks": [
             {
               "type": "command",
-              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" config state marker set 🤖 || true",
-              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" config state marker set 🤖 || exit /b 0"
+              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" --stdin-cwd config state marker set 🤖 || true",
+              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" --stdin-cwd config state marker set 🤖 || exit /b 0"
             }
           ]
         }
@@ -28,8 +28,8 @@
           "hooks": [
             {
               "type": "command",
-              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" config state marker set 💬 || true",
-              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" config state marker set 💬 || exit /b 0"
+              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" --stdin-cwd config state marker set 💬 || true",
+              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" --stdin-cwd config state marker set 💬 || exit /b 0"
             }
           ]
         }
@@ -39,8 +39,8 @@
           "hooks": [
             {
               "type": "command",
-              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" config state marker set 💬 || true",
-              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" config state marker set 💬 || exit /b 0"
+              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" --stdin-cwd config state marker set 💬 || true",
+              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" --stdin-cwd config state marker set 💬 || exit /b 0"
             }
           ]
         }
@@ -50,8 +50,8 @@
           "hooks": [
             {
               "type": "command",
-              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" config state marker clear || true",
-              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" config state marker clear || exit /b 0",
+              "command": "bash \"$PLUGIN_ROOT/hooks/wt.sh\" --stdin-cwd config state marker clear || true",
+              "commandWindows": "\"${PLUGIN_ROOT}\\hooks\\wt.cmd\" --stdin-cwd config state marker clear || exit /b 0",
               "timeout": 3
             }
           ]

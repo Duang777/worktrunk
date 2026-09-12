@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- **Codex activity markers stay on the session directory**: the plugin's marker hooks read `cwd` from the hook stdin JSON and pass `-C`, so a `cd` mid-session no longer marks another repository. Missing or empty `cwd` writes no marker.
+
 - **`wt config update` migrates `[ci] platform` into a `[forge]` section that only sets `hostname`**: the migration stood down whenever a `[forge]` section existed at all, so the config a GitHub Enterprise or self-hosted GitLab user ends up with — `[ci] platform` from before the rename, `[forge] hostname` added later for an SSH host alias — kept the deprecated key with no warning and nothing `wt config update` would do about it. The platform still resolved, so nothing broke; the deprecation notice that precedes `[ci]`'s eventual removal simply never arrived. A `[forge]` that already sets `platform`, or a `forge` that isn't a section, still stands down.
 
 - **`wt config shell install` migrates a fish wrapper at the deprecated `conf.d` path even when `~/.config/fish/functions` doesn't exist yet**: fish was skipped for want of a config location, so the bare command left the deprecated wrapper running and only `wt config shell install fish` migrated it. A worktrunk wrapper at the old path now counts as fish being configured, just at the old path. `wt config show` reports that wrapper too, where before it showed nothing at all for fish unless fish was on `PATH`.

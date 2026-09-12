@@ -158,7 +158,7 @@ The events (Codex's `HookEventsToml` vocabulary, verified against `codex-rs/conf
 
 `Stop` fires at turn-end, so 🤖 returns to 💬 when a turn completes. `SessionEnd` clears the marker when the main thread ends.
 
-Codex and Gemini marker commands still resolve from the hook process's cwd. When either harness exposes a stable session project directory, pass that directory to Worktrunk with global `-C`, as Claude does with `$CLAUDE_PROJECT_DIR`.
+Codex marker commands pass `--stdin-cwd` to `hooks/wt.sh`, which reads `cwd` from the hook stdin JSON (the session directory in Codex's hook schema) and forwards it as `wt -C`. A mid-session `cd` therefore cannot retarget the marker. Missing or empty `cwd` exits 0 without calling wt — falling through to the process cwd is the #3921 bug. Gemini marker commands still resolve from the hook process's cwd; when that harness exposes a stable session directory, pass it with `-C` the same way.
 
 ### Accepted tradeoff: shared `skills/` exposes `wt-switch-create`
 

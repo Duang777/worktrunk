@@ -106,6 +106,8 @@ $ wt list
 
 All four plugins clear the marker when a session ends. A stale marker can remain if the agent process is killed before its session-end hook runs. In every case, `wt config state marker clear` removes a marker manually.
 
+Claude Code pins the session directory with `-C "$CLAUDE_PROJECT_DIR"`. Codex reads `cwd` from the hook stdin JSON and does the same, so a `cd` mid-session does not move the marker. Gemini still follows the hook process's working directory.
+
 ### Manual status markers
 
 Set status markers manually for any workflow:

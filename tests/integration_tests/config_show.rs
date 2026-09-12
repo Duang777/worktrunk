@@ -4742,9 +4742,30 @@ fn test_codex_plugin_metadata_is_valid_json() {
     let session_end = &codex_hooks["SessionEnd"][0]["hooks"][0];
     assert_eq!(
         session_end["command"],
-        r#"bash "$PLUGIN_ROOT/hooks/wt.sh" config state marker clear || true"#
+        r#"bash "$PLUGIN_ROOT/hooks/wt.sh" --stdin-cwd config state marker clear || true"#
     );
     assert_eq!(session_end["timeout"], 3);
+    // Codex puts the session directory on stdin as `cwd`, not in the
+    // environment. Without `--stdin-cwd`, a `cd` mid-session marks the
+    // repository of the process cwd (#3921). Missing or empty `cwd` must
+    // not fall through to that cwd — same "no marker" outcome as Claude
+    // launching outside a repository.
+    for event in [
+        "UserPromptSubmit",
+        "PermissionRequest",
+        "Stop",
+        "SessionEnd",
+    ] {
+        let command = codex_hooks[event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{event} must define a command"));
+        assert!(
+            command.contains(" --stdin-cwd "),
+            "{event} must pin the directory from stdin `.cwd` via --stdin-cwd, or a \
+             shell `cd` during a turn retargets the marker to another repository \
+             (#3921). command:\n{command}"
+        );
+    }
     // Commands use Codex's native `$PLUGIN_ROOT`, never the Claude-branded
     // `$CLAUDE_PLUGIN_ROOT` compat alias — nothing Claude-branded in a Codex
     // session (#3362).
@@ -5213,6 +5234,11 @@ fn test_codex_hooks_carry_windows_commands() {
             command.contains("$PLUGIN_ROOT") && !command.contains("${PLUGIN_ROOT}"),
             "the Unix `command` must keep the unbraced $PLUGIN_ROOT. command:\n{command}"
         );
+        assert!(
+            command.contains(" --stdin-cwd ") && windows.contains(" --stdin-cwd "),
+            "both Codex hook commands must pass --stdin-cwd so a mid-session `cd` \
+             cannot retarget the marker (#3921). command:\n{command}\ncommandWindows:\n{windows}"
+        );
     }
 }
 
@@ -5308,15 +5334,32 @@ fn test_codex_windows_hook_commands_set_the_marker(repo: TestRepo) {
     let without_worktrunk = pinned_windows_path(&[]);
 
     let run_hook = |event: &str, path: &std::ffi::OsString| -> std::process::Output {
+        use std::io::Write;
+        use std::process::Stdio;
+
         let mut cmd = std::process::Command::new("cmd.exe");
         repo.configure_wt_cmd(&mut cmd);
-        cmd.arg("/C")
+        let mut child = cmd
+            .arg("/C")
             .raw_arg(format!("\"{}\"", command_for(event)))
             .env("PATH", path)
             .env_remove("WORKTRUNK_BIN")
             .current_dir(repo.root_path())
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Codex puts the session directory on stdin as `cwd`. Without it
+        // `--stdin-cwd` exits 0 and writes no marker (#3921).
+        let payload = serde_json::json!({ "cwd": repo.root_path() });
+        child
+            .stdin
+            .take()
             .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
     };
     let describe = |output: &std::process::Output| {
         format!(
@@ -5388,6 +5431,101 @@ fn test_codex_windows_hook_commands_set_the_marker(repo: TestRepo) {
         marker().is_empty(),
         "a failed hook must not invent a marker; got {:?}",
         marker()
+    );
+}
+
+/// Codex marker hooks must resolve against stdin `.cwd`, not the process
+/// working directory. A `cd` mid-session changes the latter and, before
+/// `--stdin-cwd`, marked whichever repository the shell stood in (#3921).
+/// Empty stdin is the "session has no directory" case: no marker, same as
+/// Claude launching outside a repository.
+#[cfg(unix)]
+#[rstest]
+fn test_codex_marker_hooks_follow_stdin_cwd_not_process_cwd(repo: TestRepo) {
+    use std::io::Write;
+    use std::path::Path;
+    use std::process::{Output, Stdio};
+
+    let other = TestRepo::with_initial_commit();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("plugins/worktrunk/.codex-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    let command = plugin["hooks"]["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("UserPromptSubmit must define a command")
+        .to_owned();
+
+    let run_hook = |cwd: Option<&Path>, process_dir: &Path| -> Output {
+        let mut cmd = std::process::Command::new("bash");
+        repo.configure_wt_cmd(&mut cmd);
+        let mut child = cmd
+            .args(["-c", &command])
+            .env("WORKTRUNK_BIN", crate::common::wt_bin())
+            .env("PLUGIN_ROOT", root.join("plugins/worktrunk"))
+            .current_dir(process_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn bash");
+        let mut stdin = child.stdin.take().unwrap();
+        if let Some(path) = cwd {
+            let payload = serde_json::json!({ "cwd": path });
+            stdin.write_all(payload.to_string().as_bytes()).unwrap();
+        }
+        drop(stdin);
+        child.wait_with_output().unwrap()
+    };
+    let describe = |output: &Output| {
+        format!(
+            "got {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+    let marker = |target: &TestRepo| -> String {
+        let key = format!("worktrunk.state.{}.marker", target.current_branch());
+        target
+            .git_command()
+            .args(["config", "--get", &key])
+            .run()
+            .map_or_else(
+                |_| String::new(),
+                |output| String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            )
+    };
+
+    let output = run_hook(Some(other.root_path()), repo.root_path());
+    assert!(
+        output.status.success(),
+        "hook must succeed when stdin names a repository; {}",
+        describe(&output)
+    );
+    assert!(
+        marker(&other).contains('🤖'),
+        "marker must land on stdin `.cwd`, not the process cwd; other={:?} process={:?}",
+        marker(&other),
+        marker(&repo)
+    );
+    assert!(
+        marker(&repo).is_empty(),
+        "process cwd must stay unmarked when stdin names another repository; got {:?}",
+        marker(&repo)
+    );
+
+    let output = run_hook(None, repo.root_path());
+    assert!(
+        output.status.success(),
+        "empty stdin must exit 0 rather than mark the process cwd; {}",
+        describe(&output)
+    );
+    assert!(
+        marker(&repo).is_empty(),
+        "missing `.cwd` must not fall through to the process cwd (#3921); got {:?}",
+        marker(&repo)
     );
 }
 
