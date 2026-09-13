@@ -819,13 +819,17 @@ fn test_remove_refuses_dirty_target_when_git_dir_names_invoking_worktree(mut rep
         .output()
         .unwrap();
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "wt remove must refuse when GIT_DIR names the invoking worktree.\nstdout: {}\nstderr: {}",
+        "wt remove must refuse when GIT_DIR names the invoking worktree.\nstdout: {}\nstderr: {stderr}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
     );
-    assert!(other_wt.exists(), "the dirty target worktree must survive",);
+    assert!(
+        stderr.contains("has uncommitted changes"),
+        "removal must be refused by the dirty gate, not another error: {stderr}"
+    );
+    assert!(other_wt.exists(), "the dirty target worktree must survive");
     assert_eq!(
         fs::read_to_string(other_wt.join("base.txt")).unwrap(),
         "modified",
