@@ -277,7 +277,7 @@ pub enum ApprovalsCommand {
     #[command(
         after_long_help = r#"Shows every command the project config declares — hooks, aliases, and commit-message guidance — grouped into APPROVED and UNAPPROVED sections. Approvals recorded for commands no longer in the project config (edited or removed since approval) are listed separately.
 
-Reading is all it does: no prompt, no write. `--format=json` emits the same four distinctions as a structured payload — see [Reading approval state](/config/#reading-approval-state).
+Reading is all it does: no prompt, no write. `--format=json` emits the same four distinctions as a structured payload — see [Reading approval state](/config/#wt-config-approvals--reading-approval-state).
 
 ## Examples
 
@@ -303,7 +303,7 @@ $ wt config approvals list --format=json | jq -r .state
 By default, shows only unapproved commands. Use `--all` to review all commands
 including previously approved ones.
 
-`--yes` writes the approvals without prompting, which is how a container or CI job pre-approves a project it has just cloned. It trusts every command the project config declares, including one whose template changed since an earlier approval. A caller that wants to look before granting them can list those first — see [Reading approval state](/config/#reading-approval-state).
+`--yes` writes the approvals without prompting, which is how a container or CI job pre-approves a project it has just cloned. It trusts every command the project config declares, including one whose template changed since an earlier approval. A caller that wants to look before granting them can list those first — see [Reading approval state](/config/#wt-config-approvals--reading-approval-state).
 
 ## Examples
 
