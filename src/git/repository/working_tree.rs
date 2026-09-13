@@ -301,7 +301,8 @@ impl<'a> WorkingTree<'a> {
     /// Scrubs the inherited git-discovery vars that pick a worktree
     /// (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`).
     /// This call relocates git into `self.path`; those vars are pinned to
-    /// the *invoking* worktree when `wt` runs as a `!wt` alias (`git wt …`),
+    /// the *invoking* worktree when `wt` runs with an inherited `GIT_DIR`
+    /// (a `!wt` git alias from a linked worktree is one source),
     /// so forwarding them makes `status`, `rev-parse --git-dir`, and
     /// `read-tree` operate on the wrong tree. `GIT_OBJECT_DIRECTORY` stays
     /// so a redirected repository's object-store env (applied after this)

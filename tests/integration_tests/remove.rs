@@ -8,6 +8,7 @@ use insta::assert_snapshot;
 use insta_cmd::assert_cmd_snapshot;
 use path_slash::PathExt as _;
 use rstest::rstest;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[rstest]
@@ -774,6 +775,62 @@ fn test_remove_by_name_dirty_target(mut repo: TestRepo) {
 
     // Try to remove it by name from main repo
     assert_cmd_snapshot!(make_snapshot_cmd(&repo, "remove", &["feature-dirty"], None));
+}
+
+/// An inherited `GIT_DIR` pinned to the invoking worktree makes
+/// `ensure_clean` compare the target's working tree against the invoking
+/// index. When those agree on a path, a genuinely dirty target reads as
+/// clean and removal proceeds — a silent data-loss path (#4081).
+#[rstest]
+fn test_remove_refuses_dirty_target_when_git_dir_names_invoking_worktree(mut repo: TestRepo) {
+    fs::write(repo.root_path().join("base.txt"), "base").unwrap();
+    repo.run_git_in(repo.root_path(), &["add", "base.txt"]);
+    repo.run_git_in(repo.root_path(), &["commit", "-m", "add base"]);
+
+    let other_wt = repo.add_worktree("other");
+    let feature_wt = repo.add_worktree("feature");
+
+    fs::write(feature_wt.join("base.txt"), "modified").unwrap();
+    repo.run_git_in(&feature_wt, &["add", "base.txt"]);
+    repo.run_git_in(&feature_wt, &["commit", "-m", "feature edits base.txt"]);
+
+    // Dirty against `other`'s HEAD, but matches `feature`'s index.
+    fs::write(other_wt.join("base.txt"), "modified").unwrap();
+    let status = repo
+        .git_command()
+        .args(["status", "--porcelain"])
+        .current_dir(&other_wt)
+        .run()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("base.txt"),
+        "other must be genuinely dirty: {}",
+        String::from_utf8_lossy(&status.stdout),
+    );
+
+    let git_dir = fs::read_to_string(feature_wt.join(".git")).unwrap();
+    let git_dir = PathBuf::from(git_dir.trim().strip_prefix("gitdir: ").unwrap());
+
+    let output = repo
+        .wt_command()
+        .current_dir(&feature_wt)
+        .args(["remove", "other", "--yes"])
+        .env("GIT_DIR", &git_dir)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "wt remove must refuse when GIT_DIR names the invoking worktree.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(other_wt.exists(), "the dirty target worktree must survive",);
+    assert_eq!(
+        fs::read_to_string(other_wt.join("base.txt")).unwrap(),
+        "modified",
+        "uncommitted changes must survive",
+    );
 }
 
 /// --force allows removal of dirty worktrees (issue #658)
