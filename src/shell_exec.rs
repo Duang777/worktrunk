@@ -646,9 +646,15 @@ pub fn apply_cd_directive_env(cmd: &mut std::process::Command, cd_file: &std::pa
 ///
 /// - **`wt`'s own git plumbing** splits on the same question. Repo-level
 ///   ([`Cmd`] via `Repository::run_command`) keeps the inherited context on
-///   purpose (relative values absolutized, see issue #1914): its cwd is
-///   `discovery_path`, i.e. wherever the user invoked `wt`, so `wt` honoring
-///   the context it was handed is the point of running `wt` under `git`.
+///   purpose (relative values absolutized, see issue #1914): `wt` honoring
+///   the context it was handed is the point of running `wt` under `git`. Its
+///   cwd is `discovery_path`, which is often but not always where the user
+///   invoked `wt` — `Repository::at` is handed a `wt`-chosen worktree at
+///   several sites (the post-switch hook repo, the pipeline repo, `finish`'s
+///   destination repo, the `pre-remove` render repo). The exemption rests on
+///   scope rather than cwd: repo-level questions are worktree-agnostic within
+///   one repository, and every worktree-scoped answer routes through
+///   [`crate::git::WorkingTree`], which scrubs.
 ///   **Worktree-local** plumbing — [`crate::git::WorkingTree::run_command`],
 ///   `TempIndex::command`, `list_ignored_entries` — relocates git into a
 ///   worktree `wt` resolved, so it scrubs, the same way hooks and `for-each`
