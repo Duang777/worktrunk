@@ -298,15 +298,16 @@ impl<'a> WorkingTree<'a> {
     /// Use this when you need to check exit codes directly (e.g., for commands
     /// where non-zero exit is not an error condition).
     ///
-    /// Scrubs the inherited git-discovery vars that pick a worktree
-    /// (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`).
+    /// Scrubs the inherited git-discovery vars
+    /// ([`INHERITED_GIT_PATH_VARS`](crate::shell_exec::INHERITED_GIT_PATH_VARS)).
     /// This call relocates git into `self.path`; those vars are pinned to
     /// the *invoking* worktree when `wt` runs with an inherited `GIT_DIR`
-    /// (a `!wt` git alias from a linked worktree is one source),
-    /// so forwarding them makes `status`, `rev-parse --git-dir`, and
-    /// `read-tree` operate on the wrong tree. `GIT_OBJECT_DIRECTORY` stays
-    /// so a redirected repository's object-store env (applied after this)
-    /// is not stripped — `Cmd` applies env-removes last. Repo-level
+    /// (a `!wt` git alias from a linked worktree is one source, and git
+    /// exports discovery vars to the hooks it spawns), so forwarding them
+    /// makes `status`, `rev-parse --git-dir`, and `read-tree` operate on the
+    /// wrong tree. A redirected repository's own `GIT_OBJECT_DIRECTORY` is
+    /// unaffected: `with_object_store_env` sets it after the scrub, and `Cmd`
+    /// applies env mutations in call order. Repo-level
     /// [`Repository::run_command`] keeps the inherited context on purpose.
     pub fn run_command_output(&self, args: &[&str]) -> anyhow::Result<std::process::Output> {
         self.repo
@@ -315,10 +316,7 @@ impl<'a> WorkingTree<'a> {
                     .args(args.iter().copied())
                     .current_dir(&self.path)
                     .context(path_to_logging_context(&self.path))
-                    .env_remove("GIT_DIR")
-                    .env_remove("GIT_WORK_TREE")
-                    .env_remove("GIT_COMMON_DIR")
-                    .env_remove("GIT_INDEX_FILE"),
+                    .scrub_git_discovery_env(),
             )
             .run()
             .with_context(|| format!("Failed to execute: git {}", args.join(" ")))
@@ -1252,6 +1250,12 @@ impl TempIndex {
     /// Wires `current_dir` to the worktree root, the worktree's logging
     /// context, and `GIT_INDEX_FILE`. The caller adds the subcommand and
     /// chooses `.run()` / `.stream()`.
+    ///
+    /// Scrubs the inherited git-discovery vars for the same reason
+    /// [`WorkingTree::run_command_output`] does, then sets its own
+    /// `GIT_INDEX_FILE` (and, for a redirected repository, its own object-store
+    /// vars) after the scrub — `Cmd` applies env mutations in call order, so
+    /// those sets survive it.
     pub(super) fn command<I, S>(&self, args: I) -> Cmd
     where
         I: IntoIterator<Item = S>,
@@ -1261,9 +1265,7 @@ impl TempIndex {
             .args(args)
             .current_dir(&self.worktree_root)
             .context(self.log_ctx.clone())
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_COMMON_DIR")
+            .scrub_git_discovery_env()
             .env("GIT_INDEX_FILE", self.path());
         match &self.object_store_environment {
             Some((directory, alternates)) => command
