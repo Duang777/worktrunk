@@ -34,7 +34,7 @@ The most common creation hook is `post-start` — it runs background tasks (dev 
 | `post-commit` | CI triggers, notifications, background linting |
 | `pre-merge` | Tests, security scans, build verification — runs after rebase, before merge to target |
 | `post-merge` | Deployment, notifications, installing updated binaries. Runs in the target branch worktree if it exists, otherwise the primary worktree |
-| `pre-remove` | Cleanup before worktree deletion: saving test artifacts, backing up state. Runs in the worktree being removed |
+| `pre-remove` | Cleanup before worktree deletion: saving test artifacts, backing up state, or locking the worktree to preserve it. Runs in the worktree being removed |
 | `post-remove` | Stopping dev servers, removing containers, notifying external systems. Template variables reference the removed worktree |
 
 During `wt merge`, the blocking hooks run in this order: pre-commit → pre-merge → pre-remove. The `post-*` hooks start together once the merge finishes. See [`wt merge`](/merge/#pipeline) for the complete pipeline.
