@@ -28,6 +28,7 @@ use worktrunk::HookType;
 use worktrunk::config::UserConfig;
 use worktrunk::git::{BranchDeletionMode, Repository};
 use worktrunk::styling::{eprintln, info_message};
+use worktrunk::utils::escape_text_for_terminal;
 
 use super::types::{RemovalPlan, SharedBranchCheckout};
 use crate::commands::command_executor::CommandContext;
@@ -171,9 +172,10 @@ pub fn finish_after_merge(
         }
         // The pre-update decision is frozen: unlocking after the target ref
         // moves must not upgrade a retained worktree into removal.
-        MergeRemovalDisposition::Locked(Some(reason)) => {
-            Some(format!("Worktree preserved (locked: {reason})"))
-        }
+        MergeRemovalDisposition::Locked(Some(reason)) => Some(format!(
+            "Worktree preserved (locked: {})",
+            escape_text_for_terminal(&reason)
+        )),
         MergeRemovalDisposition::Locked(None) => Some("Worktree preserved (locked)".into()),
         MergeRemovalDisposition::Remove => None,
     };
@@ -198,7 +200,10 @@ pub fn finish_after_merge(
             // request before emitting a cd directive or starting removal.
             if let Some(reason) = current_wt.lock_reason()? {
                 let message = match reason {
-                    Some(reason) => format!("Worktree preserved (locked: {reason})"),
+                    Some(reason) => format!(
+                        "Worktree preserved (locked: {})",
+                        escape_text_for_terminal(&reason)
+                    ),
                     None => "Worktree preserved (locked)".into(),
                 };
                 eprintln!("{}", info_message(message));
@@ -258,17 +263,18 @@ pub fn finish_after_merge(
                 removed_commit: feature_commit.clone(),
                 branch_checked_out_at,
             };
-            // The fate is dropped: merge's own reporting (`removed` in the JSON
-            // blob, the removal messages) doesn't itemize the branch, and the
-            // handler has already narrated any retention.
-            handle_remove_output_after_pre_remove(
+            // Merge's `removed` flag means the removal path started; a
+            // hook-created lock is the one successful preservation outcome.
+            // Branch fate remains narrated by the shared handler.
+            let removed = handle_remove_output_after_pre_remove(
                 &remove_result,
                 RemovalExecution::Background(BackgroundFallbackMode::Detached),
                 plan,
                 false,
                 announcer,
-            )?;
-            true
+            )?
+            .removal_started();
+            break 'removal removed;
         }
     };
 

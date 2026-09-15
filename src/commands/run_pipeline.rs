@@ -9,10 +9,11 @@
 //! ## Lifecycle
 //!
 //! 1. Read and deserialize the spec from stdin.
-//! 2. Open a [`Repository`] from the worktree path in the spec.
-//! 3. Walk steps in order. For each step, expand templates and spawn shell
+//! 2. Wait for a deferred worktree removal when the parent supplied one.
+//! 3. Open a [`Repository`] from the worktree path in the spec.
+//! 4. Walk steps in order. For each step, expand templates and spawn shell
 //!    children (see Execution model). Abort on the first serial step failure.
-//! 4. Exit. Log files in `.git/wt/logs/` are the only artifacts.
+//! 5. Exit. Log files in `.git/wt/logs/` are the only artifacts.
 //!
 //! ## Execution model
 //!
@@ -58,6 +59,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -73,6 +75,9 @@ use super::command_executor::{
 use super::hook_filter::HookSource;
 use super::process::HookLog;
 
+const REMOVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+const REMOVAL_WAIT_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Serialized specification for a background hook pipeline.
 ///
 /// The envelope carries pipeline-wide execution metadata. Its steps use the
@@ -85,6 +90,8 @@ pub(super) struct PipelineSpec {
     pub branch: String,
     pub hook_type: HookType,
     pub source: HookSource,
+    #[serde(default)]
+    pub wait_for_worktree_removal: Option<PathBuf>,
     pub steps: Vec<PreparedStep>,
 }
 
@@ -105,6 +112,10 @@ pub fn run_pipeline() -> anyhow::Result<()> {
 
     let spec: PipelineSpec =
         serde_json::from_str(&contents).context("failed to deserialize pipeline spec")?;
+
+    if let Some(path) = spec.wait_for_worktree_removal.as_deref() {
+        wait_for_worktree_removal(path)?;
+    }
 
     let repo =
         Repository::at(&spec.worktree_path).context("failed to open repository for pipeline")?;
@@ -141,6 +152,38 @@ pub fn run_pipeline() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Wait until a detached legacy removal has physically removed its worktree.
+///
+/// The fallback can outlive the foreground `wt` process. Post-remove and
+/// removal-triggered post-switch hooks use this condition so their first
+/// command cannot observe the old worktree. A bounded wait prevents a failed
+/// detached removal from leaving hook runners around indefinitely.
+fn wait_for_worktree_removal(path: &Path) -> anyhow::Result<()> {
+    let started = Instant::now();
+    loop {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect deferred worktree removal: {}",
+                        path.display()
+                    )
+                });
+            }
+            Ok(_) if started.elapsed() < REMOVAL_WAIT_TIMEOUT => {
+                std::thread::sleep(REMOVAL_WAIT_INTERVAL);
+            }
+            Ok(_) => {
+                anyhow::bail!(
+                    "timed out waiting for deferred worktree removal: {}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Spawn a shell command with context JSON piped to stdin.
