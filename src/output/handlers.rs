@@ -1204,6 +1204,31 @@ pub fn handle_remove_output(
     quiet: bool,
     announcer: &mut HookAnnouncer<'_>,
 ) -> anyhow::Result<BranchFate> {
+    handle_remove_output_impl(plan, execution, hook_plan, quiet, announcer, true)
+}
+
+/// Execute a removal after its `pre-remove` hook has already run.
+///
+/// Merge uses this so it can honor a lock created by the hook as a request to
+/// preserve the worktree, without running the frozen hook a second time.
+pub(crate) fn handle_remove_output_after_pre_remove(
+    plan: &RemovalPlan,
+    execution: RemovalExecution,
+    hook_plan: &ApprovedHookPlan,
+    quiet: bool,
+    announcer: &mut HookAnnouncer<'_>,
+) -> anyhow::Result<BranchFate> {
+    handle_remove_output_impl(plan, execution, hook_plan, quiet, announcer, false)
+}
+
+fn handle_remove_output_impl(
+    plan: &RemovalPlan,
+    execution: RemovalExecution,
+    hook_plan: &ApprovedHookPlan,
+    quiet: bool,
+    announcer: &mut HookAnnouncer<'_>,
+    run_pre_remove: bool,
+) -> anyhow::Result<BranchFate> {
     match plan {
         RemovalPlan::Worktree {
             main_path,
@@ -1232,6 +1257,7 @@ pub fn handle_remove_output(
                 execution,
             },
             announcer,
+            run_pre_remove,
         ),
         RemovalPlan::BranchOnly {
             branch_name,
@@ -1745,44 +1771,48 @@ impl WorktreeRemovalContext<'_> {
     }
 }
 
-fn execute_pre_remove_hooks_if_needed(
-    repo: &Repository,
-    ctx: &WorktreeRemovalContext<'_>,
+pub(crate) fn execute_pre_remove_hook(
+    main_path: &Path,
+    worktree_path: &Path,
+    changed_directory: bool,
+    branch_name: Option<&str>,
+    hook_plan: &ApprovedHookPlan,
 ) -> anyhow::Result<()> {
     let Ok(config) = UserConfig::load() else {
         return Ok(());
     };
 
+    let repo = Repository::at(main_path)?;
     // `pre-remove` runs in the worktree being removed (still on disk here).
     // `pre_remove_repo` roots the *render* context there for template vars;
     // the command set is the frozen `hook_plan` selected at the gate, so no
     // `.config/wt.toml` is re-read here.
-    let pre_remove_repo = Repository::at(ctx.worktree_path)?;
+    let pre_remove_repo = Repository::at(worktree_path)?;
     let command_ctx = CommandContext::new(
         &pre_remove_repo,
         &config,
-        ctx.branch_name,
-        ctx.worktree_path,
+        branch_name,
+        worktree_path,
         false, // yes=false for CommandContext (not approval-related)
     );
-    let display_path = if ctx.changed_directory {
+    let display_path = if changed_directory {
         None
     } else {
-        Some(ctx.worktree_path)
+        Some(worktree_path)
     };
     // `TemplateVars` rather than a hand-rolled vec: `as_extra_vars` omits an
     // absent `target` instead of pushing `""`, so a detached primary worktree
     // renders the same here as it does for the `post-remove` half of the same
     // removal (issue #4009).
-    let target_branch = repo.worktree_at(ctx.main_path).branch().ok().flatten();
+    let target_branch = repo.worktree_at(main_path).branch().ok().flatten();
     let vars = TemplateVars::new()
         .with_target_opt(target_branch.as_deref())
-        .with_target_worktree_path(ctx.main_path);
+        .with_target_worktree_path(main_path);
     let extra_vars = vars.as_extra_vars();
 
     execute_planned_hook(
-        ctx.hook_plan,
-        ctx.worktree_path,
+        hook_plan,
+        worktree_path,
         &command_ctx,
         worktrunk::HookType::PreRemove,
         &extra_vars,
@@ -2010,12 +2040,21 @@ fn handle_named_removed_worktree_background(
 fn handle_removed_worktree_output(
     ctx: WorktreeRemovalContext<'_>,
     announcer: &mut HookAnnouncer<'_>,
+    run_pre_remove: bool,
 ) -> anyhow::Result<BranchFate> {
     // Use main_path for discovery - the worktree being removed might be cwd,
     // and git operations after removal need a valid working directory.
     let repo = worktrunk::git::Repository::at(ctx.main_path)?;
 
-    execute_pre_remove_hooks_if_needed(&repo, &ctx)?;
+    if run_pre_remove {
+        execute_pre_remove_hook(
+            ctx.main_path,
+            ctx.worktree_path,
+            ctx.changed_directory,
+            ctx.branch_name,
+            ctx.hook_plan,
+        )?;
+    }
 
     // No re-validation after `pre-remove` hooks: the pre-rename `ensure_clean`
     // in the removal core catches a hook-dirtied worktree, and the branch
