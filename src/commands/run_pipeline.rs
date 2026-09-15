@@ -487,4 +487,20 @@ mod tests {
             "a replacement at the old path must not block post-remove hooks"
         );
     }
+
+    #[test]
+    fn removal_completion_reports_marker_inspection_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let non_directory = temp.path().join("not-a-directory");
+        fs::write(&non_directory, "").unwrap();
+        let marker = non_directory.join("pending");
+
+        let error = wait_for_removal_completion(&marker).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed to inspect deferred removal marker"),
+            "unexpected error: {error:#}"
+        );
+    }
 }

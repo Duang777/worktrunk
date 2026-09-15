@@ -3216,6 +3216,36 @@ pub mod tests {
     }
 
     #[test]
+    fn test_do_removal_branch_only_keep_skips_deletion() {
+        let test = worktrunk::testing::TestRepo::with_initial_commit();
+        let repo = worktrunk::git::Repository::at(test.path()).unwrap();
+        repo.run_command(&["branch", "feature"]).unwrap();
+
+        let result = RemovalPlan::BranchOnly {
+            branch_name: "feature".to_string(),
+            deletion_mode: BranchDeletionMode::Keep,
+            prune_entry: None,
+            target_branch: None,
+            integration_reason: None,
+            branch_checked_out_at: None,
+        };
+        let outcome = AltXRemover::do_removal(&repo, &result, &Approvals::default()).unwrap();
+
+        assert!(matches!(
+            outcome,
+            crate::commands::worktree::RemovalOutcome::Completed(
+                crate::commands::worktree::BranchFate::NotAttempted
+            )
+        ));
+        assert!(
+            !repo
+                .run_command(&["branch", "--list", "feature"])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn test_do_removal_removes_detached_worktree() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
@@ -4275,6 +4305,79 @@ pub mod tests {
         );
     }
 
+    #[test]
+    fn test_apply_reverts_morph_when_removal_fails() {
+        let test = worktrunk::testing::TestRepo::with_initial_commit();
+        let repo = worktrunk::git::Repository::at(test.path()).unwrap();
+        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_path = wt_dir.path().join("feature");
+        repo.run_command(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            wt_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        fs::write(wt_path.join("new.txt"), "unmerged work").unwrap();
+        worktrunk::shell_exec::Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&wt_path)
+            .run()
+            .unwrap();
+        worktrunk::shell_exec::Cmd::new("git")
+            .args(["commit", "-m", "unmerged work"])
+            .current_dir(&wt_path)
+            .run()
+            .unwrap();
+
+        fs::create_dir_all(test.path().join(".config")).unwrap();
+        fs::write(
+            test.path().join(".config/wt.toml"),
+            "pre-remove = \"false\"\n",
+        )
+        .unwrap();
+        let approvals_dir = tempfile::tempdir().unwrap();
+        let mut approvals = Approvals::default();
+        approvals
+            .approve_commands(
+                repo.project_identifier().unwrap(),
+                vec!["false".to_string()],
+                &approvals_dir.path().join("approvals.toml"),
+            )
+            .unwrap();
+
+        let reported_path = repo
+            .list_worktrees()
+            .unwrap()
+            .iter()
+            .find(|wt| wt.branch.as_deref() == Some("feature"))
+            .map(|wt| wt.path.clone())
+            .expect("feature worktree is listed");
+        let items = Arc::new(Mutex::new(Vec::new()));
+        let mut remover = test_remover(Arc::clone(&items), repo);
+        remover.approvals = Arc::new(approvals);
+        let (row, token, rendered, morphed) =
+            setup_morphable_row(&remover, "feature", &reported_path);
+        items.lock().unwrap().push(row);
+
+        assert!(matches!(
+            remover.apply(token.clone()),
+            RemovalEffect::Morphed
+        ));
+        worktrunk::testing::wait_for("failed morph to be reverted", || {
+            !morphed.load(std::sync::atomic::Ordering::Relaxed)
+                && !remover.stashed_warnings.lock().unwrap().is_empty()
+        });
+
+        assert_eq!(items.lock().unwrap()[0].output().as_ref(), token);
+        assert_eq!(*rendered.lock().unwrap(), "+ feature");
+        assert!(
+            reported_path.exists(),
+            "the failed removal keeps the worktree"
+        );
+    }
+
     /// A locking `pre-remove` hook deliberately preserves the worktree. The
     /// picker restores the optimistically dropped row, but reports the
     /// preservation as an info outcome rather than a failed removal.
@@ -4825,6 +4928,24 @@ pub mod tests {
             matches!(event_rx.try_recv(), Ok(skim::prelude::Event::RunPreview)),
             "morph reconciliation must refresh the selected preview"
         );
+    }
+
+    #[test]
+    fn test_replay_morph_without_live_slots_is_a_noop() {
+        let row = branch_only_picker_item("unrelated");
+        let mut rows = vec![row];
+        let mut shortcuts = std::collections::HashMap::new();
+        let layout_slot = Arc::new(Mutex::new(None));
+        let mutations = [super::RowMutation::Morph {
+            worktree_token: "worktree-path:/tmp/gone".to_string(),
+            branch: "feature".to_string(),
+            default_branch: Some("main".to_string()),
+        }];
+
+        super::replay_row_mutations(&mut rows, &mut shortcuts, &layout_slot, &mutations);
+
+        assert_eq!(rows.len(), 1);
+        assert!(shortcuts.is_empty());
     }
 
     /// `worktree_removal_keeps_branch` predicts the morph: a `Worktree`

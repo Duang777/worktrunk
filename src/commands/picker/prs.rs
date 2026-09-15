@@ -1960,6 +1960,33 @@ mod tests {
     }
 
     #[test]
+    fn stale_pr_rows_do_not_publish_after_refresh() {
+        let test = worktrunk::testing::TestRepo::with_initial_commit();
+        let orchestrator = PreviewOrchestrator::new(test.repo.clone(), Arc::new(OnceLock::new()));
+        let shared = PrsShared {
+            grid_slot: Arc::new(GridSlot::new()),
+            shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            shared_items: Arc::new(Mutex::new(Vec::new())),
+            spawn_gen: orchestrator.generation(),
+        };
+        orchestrator.refresh(test.repo.clone());
+
+        let stale_items: Vec<Arc<dyn SkimItem>> = vec![Arc::new("pr:42".to_string())];
+        let stale_shortcuts = vec![(
+            "pr:42".to_string(),
+            RowShortcutData {
+                branch: Some("feature".to_string()),
+                url: RowUrl::Static(Some("https://example.com/pr/42".to_string())),
+                morph: None,
+            },
+        )];
+
+        assert!(!publish_pr_rows(&shared, &stale_items, stale_shortcuts));
+        assert!(shared.shared_items.lock().unwrap().is_empty());
+        assert!(shared.shortcut_table.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn pr_rows_collected_before_removal_publish_after_reconciliation() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let orchestrator = PreviewOrchestrator::new(test.repo.clone(), Arc::new(OnceLock::new()));

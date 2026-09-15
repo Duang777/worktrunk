@@ -1337,6 +1337,20 @@ mod tests {
     }
 
     #[test]
+    fn has_staged_changes_surfaces_git_errors() {
+        let test = TestRepo::with_initial_commit();
+        let repo = Repository::at(test.root_path()).unwrap();
+        let worktree = repo.current_worktree();
+        std::fs::write(worktree.git_dir().unwrap().join("index"), "not an index").unwrap();
+
+        let error = worktree.has_staged_changes().unwrap_err();
+        assert!(
+            error.to_string().contains("git diff"),
+            "expected the failed git command, got {error:#}"
+        );
+    }
+
+    #[test]
     fn submodule_status_empty_is_not_initialized() {
         assert!(!has_initialized_submodules_from_status(""));
     }

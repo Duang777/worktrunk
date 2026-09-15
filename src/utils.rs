@@ -392,8 +392,8 @@ mod tests {
     #[test]
     fn escape_text_for_terminal_escapes_controls_and_bidi() {
         assert_eq!(
-            escape_text_for_terminal("lock\nreason\u{202e}"),
-            r"lock\nreason\u{202e}"
+            escape_text_for_terminal("lock\nreason\u{202e}\u{2066}"),
+            r"lock\nreason\u{202e}\u{2066}"
         );
     }
 }

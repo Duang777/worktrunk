@@ -2466,6 +2466,39 @@ approved-commands = [{hook:?}]
     );
 }
 
+#[rstest]
+fn test_pre_remove_hook_lock_without_reason_is_reported(mut repo: TestRepo) {
+    let hook = "git worktree lock .";
+    repo.write_project_config(&format!("pre-remove = {hook:?}"));
+    repo.commit("Add pre-remove hook");
+    repo.write_test_approvals(&format!(
+        r#"[projects."../origin"]
+approved-commands = [{hook:?}]
+"#
+    ));
+
+    let worktree_path = repo.add_worktree("feature-hook-lock-no-reason");
+    let output = repo
+        .wt_command()
+        .args(["remove", "--foreground", "feature-hook-lock-no-reason"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "a hook-created lock should preserve the worktree; stderr:\n{stderr}"
+    );
+    assert!(
+        worktree_path.exists(),
+        "the locked worktree must be preserved"
+    );
+    assert!(
+        stderr.contains("Worktree preserved (locked)"),
+        "the reasonless preservation state must be reported; stderr:\n{stderr}"
+    );
+}
+
 #[cfg(unix)]
 #[rstest]
 fn test_pre_remove_hook_lock_skips_reap(mut repo: TestRepo) {
