@@ -2103,6 +2103,144 @@ fn test_merge_non_all_stage_modes_refuse_hidden_untracked_before_update(
     );
 }
 
+/// The early removal gate should report only changes that the selected stage
+/// mode leaves behind. A tracked edit is handled by `--stage=tracked`, while an
+/// untracked file still blocks removal.
+#[rstest]
+fn test_merge_stage_tracked_refusal_reports_only_residual_untracked(mut repo: TestRepo) {
+    let feature_wt = repo.add_worktree_with_commit(
+        "feature",
+        "tracked.txt",
+        "committed content",
+        "Add tracked file",
+    );
+    repo.run_git(&["config", "status.showUntrackedFiles", "no"]);
+    fs::write(feature_wt.join("tracked.txt"), "tracked edit").unwrap();
+    fs::write(feature_wt.join("precious.txt"), "untracked work").unwrap();
+
+    let output = repo
+        .wt_command()
+        .args([
+            "merge",
+            "main",
+            "--no-squash",
+            "--no-hooks",
+            "--stage=tracked",
+        ])
+        .current_dir(&feature_wt)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "merge must refuse the residual untracked file; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("precious.txt"),
+        "the refusal must name the untracked file that blocks removal; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("tracked.txt"),
+        "the refusal must not list a tracked edit that --stage=tracked would commit; stderr:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[rstest]
+fn test_merge_stage_tracked_refusal_escapes_residual_untracked_paths(mut repo: TestRepo) {
+    let feature_wt = repo.add_worktree_with_commit(
+        "feature",
+        "tracked.txt",
+        "committed content",
+        "Add tracked file",
+    );
+    let control_and_bidi = "control\nfake-error\t\u{1b}]0;spoofed-title\u{7}-\u{202e}txt.safe";
+    fs::write(feature_wt.join(control_and_bidi), "untracked work").unwrap();
+    fs::write(
+        feature_wt.join(r"control\nfake-error\t\u{1b}]0;spoofed-title\u{7}-\u{202e}txt.safe"),
+        "literal escapes",
+    )
+    .unwrap();
+
+    let output = repo
+        .wt_command()
+        .args([
+            "merge",
+            "main",
+            "--no-squash",
+            "--no-hooks",
+            "--stage=tracked",
+        ])
+        .current_dir(&feature_wt)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "merge must refuse residual untracked files; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(r"control\nfake-error\t\u{1b}]0;spoofed-title\u{7}-\u{202e}txt.safe")
+            && stderr.contains(
+                r"control\\nfake-error\\t\\u{1b}]0;spoofed-title\\u{7}-\\u{202e}txt.safe"
+            ),
+        "the refusal must distinguish escaped controls from literal escapes; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("\u{1b}]0;spoofed-title") && !stderr.contains('\u{202e}'),
+        "the refusal must not emit terminal or bidi controls; stderr:\n{stderr}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[rstest]
+fn test_merge_stage_tracked_refusal_escapes_non_utf8_residual_paths(mut repo: TestRepo) {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let feature_wt = repo.add_worktree_with_commit(
+        "feature",
+        "tracked.txt",
+        "committed content",
+        "Add tracked file",
+    );
+    fs::write(
+        feature_wt.join(OsString::from_vec(b"invalid-\xff.txt".to_vec())),
+        "invalid byte",
+    )
+    .unwrap();
+    fs::write(feature_wt.join(r"invalid-\xFF.txt"), "literal byte escape").unwrap();
+
+    let output = repo
+        .wt_command()
+        .args([
+            "merge",
+            "main",
+            "--no-squash",
+            "--no-hooks",
+            "--stage=tracked",
+        ])
+        .current_dir(&feature_wt)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "merge must refuse residual untracked files; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.matches(r"\xFF").count() == 2 && stderr.contains(r"invalid-\\xFF.txt"),
+        "the refusal must distinguish escaped bytes from a literal escape; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{fffd}'),
+        "the refusal must not collapse invalid filename bytes to replacement characters; stderr:\n{stderr}"
+    );
+}
+
 /// `diff.ignoreSubmodules=all` must not hide a staged gitlink from the
 /// stage-none commit decision.
 #[rstest]
@@ -2889,6 +3027,10 @@ fn test_merge_pre_remove_dirty_mutation_aborts_cleanup(mut repo: TestRepo) {
     "git worktree lock --reason hook .",
     "Worktree preserved (locked: hook)"
 )]
+#[case(
+    "git worktree lock --reason \"$(printf 'trusted\\nforged\\033]8;;https://example.com\\007link\\033]8;;\\007tail')\" .",
+    r"Worktree preserved (locked: trusted\nforged\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7}tail)"
+)]
 #[case("git worktree lock .", "Worktree preserved (locked)")]
 fn test_merge_pre_remove_lock_preserves_worktree(
     mut repo: TestRepo,
@@ -3458,6 +3600,37 @@ fn test_step_commit_auto_staging_warning_escapes_control_characters(repo: TestRe
     assert!(
         !stderr.contains("\u{1b}]0;spoofed-title"),
         "the warning must not pass a filename's terminal control sequence through; stderr:\n{stderr}"
+    );
+}
+
+#[rstest]
+fn test_step_commit_auto_staging_warning_escapes_bidi_controls(repo: TestRepo) {
+    repo.run_git(&["config", "status.showUntrackedFiles", "no"]);
+    let filename = "report\u{202e}txt.safe";
+    fs::write(repo.root_path().join(filename), "content").unwrap();
+
+    let output = repo
+        .wt_command()
+        .args(["step", "commit", "--no-hooks"])
+        .env(
+            "WORKTRUNK_COMMIT__GENERATION__COMMAND",
+            "cat >/dev/null && echo 'feat: include bidi filename'",
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "step commit should succeed; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(r"report\u{202e}txt.safe"),
+        "the warning must render the bidi control as an explicit escape; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{202e}'),
+        "the warning must not pass a bidi control through to the terminal; stderr:\n{stderr}"
     );
 }
 
