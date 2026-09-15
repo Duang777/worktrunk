@@ -4,8 +4,9 @@ use anyhow::Context;
 use color_print::cformat;
 use worktrunk::HookType;
 use worktrunk::config::{MergeConfig, UserConfig};
-use worktrunk::git::{GitError, Repository, WorkingTree, parse_untracked_files};
+use worktrunk::git::{CommandError, GitError, Repository, WorkingTree, parse_untracked_files};
 use worktrunk::styling::{eprintln, info_message};
+use worktrunk::utils::escape_filename_for_terminal;
 
 use crate::output::print_json;
 
@@ -171,10 +172,15 @@ fn should_auto_commit(worktree: &WorkingTree<'_>, stage_mode: StageMode) -> anyh
     Ok(!status.trim().is_empty())
 }
 
-fn has_untracked_files(worktree: &WorkingTree<'_>) -> anyhow::Result<bool> {
-    let status =
-        worktree.run_command(&["status", "--porcelain", "-z", "--untracked-files=normal"])?;
-    Ok(!parse_untracked_files(&status).is_empty())
+fn untracked_files(worktree: &WorkingTree<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
+    let args = ["status", "--porcelain", "-z", "--untracked-files=normal"];
+    let output = worktree
+        .run_command_output(&args)
+        .context("Failed to inspect untracked files")?;
+    if !output.status.success() {
+        return Err(CommandError::from_failed_output("git", &args, &output).into());
+    }
+    Ok(parse_untracked_files(&output.stdout))
 }
 
 pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
@@ -311,16 +317,20 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
     // Non-all stage modes deliberately leave untracked files behind. Refuse
     // before updating the target branch when merge would then remove this
     // worktree; the final removal guard remains the race-safe backstop.
-    if commit
-        && removal_will_run
-        && stage_mode != StageMode::All
-        && has_untracked_files(&current_wt)?
-    {
+    let residual_untracked = if commit && removal_will_run && stage_mode != StageMode::All {
+        untracked_files(&current_wt)?
+    } else {
+        Vec::new()
+    };
+    if !residual_untracked.is_empty() {
         return Err(GitError::UncommittedChanges {
             action: Some("merge and remove worktree".into()),
             branch: Some(current_branch),
             force_hint: false,
-            dirty_files: current_wt.dirty_files()?,
+            dirty_files: residual_untracked
+                .into_iter()
+                .map(|path| format!("?? {}", escape_filename_for_terminal(&path)))
+                .collect(),
         }
         .into());
     }
