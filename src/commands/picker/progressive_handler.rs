@@ -57,6 +57,7 @@ use super::items::{
 use super::preview::PreviewMode;
 use super::preview_notify::PrStatusDelta;
 use super::preview_orchestrator::{PreviewOrchestrator, SpawnGeneration};
+use super::{RowMutationLog, replay_row_mutations};
 use crate::commands::list::collect::PickerProgressHandler;
 use crate::commands::list::model::{BranchScope, ItemKind, ListItem};
 
@@ -89,15 +90,11 @@ pub(super) struct PickerHandler {
     /// atomically in `on_skeleton` with this skeleton's worktree/branch rows;
     /// the `--prs` thread extends it with PR/MR rows. See [`ShortcutTable`].
     pub(super) shortcut_table: ShortcutTable,
-    /// Picker-lifetime generation bumped after each successful `alt-x`
-    /// mutation. A refresh captures the value when it starts and may publish
-    /// its collected rows only while that value is still current.
-    pub(super) row_mutation_generation: Arc<AtomicU64>,
-    /// [`Self::row_mutation_generation`] observed when this handler's collect
-    /// pass started. If removal completes while collection is in flight, the
-    /// resulting pre-removal skeleton is stale and must not replace the
-    /// reconciled shared rows.
-    pub(super) row_mutation_generation_at_spawn: u64,
+    /// Picker-lifetime alt-x mutations. A refresh captures a cursor when it
+    /// starts and replays later mutations into its collected snapshot before
+    /// publishing.
+    pub(super) row_mutations: RowMutationLog,
+    pub(super) row_mutation_cursor: usize,
     /// One `Arc<Mutex<String>>` per data row — same Arcs `PickerRow`
     /// holds. Set once in `on_skeleton`, read lock-free thereafter.
     pub(super) rendered_slots: OnceLock<Box<[Arc<Mutex<String>>]>>,
@@ -493,11 +490,11 @@ impl PickerProgressHandler for PickerHandler {
             .set(local_content_slots.into_boxed_slice());
         // Publish rows and their shortcut metadata as one snapshot. The lock
         // order matches successful alt-x reconciliation: shared rows first,
-        // shortcut table second. Besides the refresh spawn token, check the
-        // picker-lifetime row-mutation generation: a collect pass can start
+        // shortcut table second, mutation log third. A collect pass can start
         // before a removal completes, then finish after reconciliation has
-        // removed or morphed its stale worktree row. Such a pass must not
-        // resurrect that pre-removal snapshot.
+        // removed or morphed its stale worktree row. Replay those successful
+        // mutations into the incoming snapshot so the refresh can still
+        // publish without resurrecting the old row.
         //
         // Always send the committed shared snapshot to skim. A stale handler's
         // own channel can still be the active reload channel, so dropping the
@@ -507,9 +504,16 @@ impl PickerProgressHandler for PickerHandler {
         let published_items = {
             let mut list = self.shared_items.lock().unwrap();
             let mut table = self.shortcut_table.lock().unwrap();
-            let mutation_is_current = self.row_mutation_generation.load(Ordering::SeqCst)
-                == self.row_mutation_generation_at_spawn;
-            if self.spawn_gen.is_current() && mutation_is_current {
+            let mutations = self.row_mutations.lock().unwrap();
+            if self.spawn_gen.is_current() {
+                replay_row_mutations(
+                    &mut skim_items,
+                    &mut shortcut_map,
+                    &self.layout_slot,
+                    mutations
+                        .get(self.row_mutation_cursor..)
+                        .unwrap_or_default(),
+                );
                 *list = skim_items;
                 *table = shortcut_map;
             }
@@ -710,8 +714,8 @@ mod tests {
             last_render_poke: Mutex::new(Instant::now()),
             shared_items: Arc::new(Mutex::new(Vec::new())),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(AtomicU64::new(0)),
-            row_mutation_generation_at_spawn: 0,
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
+            row_mutation_cursor: 0,
             rendered_slots: OnceLock::new(),
             pr_status_slots: OnceLock::new(),
             comments_fetched: OnceLock::new(),
@@ -1811,10 +1815,10 @@ mod tests {
 
     /// A refresh that started before a successful alt-x removal can finish
     /// after the removal's final reconciliation. Its spawn token is still
-    /// current, but its row-mutation generation is not: reject both halves of
-    /// the stale snapshot and stream the reconciled rows to skim instead.
+    /// current, so it must replay the drop into its collected rows and publish
+    /// that reconciled snapshot instead of leaving the previous one on screen.
     #[test]
-    fn pre_removal_skeleton_cannot_publish_after_row_reconciliation() {
+    fn current_skeleton_replays_drop_before_publication() {
         let (handler, _test, rx) = make_handler();
         let current_row: Arc<dyn SkimItem> = Arc::new("current".to_string());
         handler
@@ -1831,11 +1835,15 @@ mod tests {
             },
         );
 
-        // This handler captured generation 0 in `handler_with`; model the
-        // successful removal's reconciliation before its collect pass lands.
+        // This handler captured cursor 0 in `handler_with`; model a successful
+        // removal of the row this collect pass had already discovered.
         handler
-            .row_mutation_generation
-            .fetch_add(1, Ordering::SeqCst);
+            .row_mutations
+            .lock()
+            .unwrap()
+            .push(super::super::RowMutation::Drop {
+                worktree_token: "stale".to_string(),
+            });
 
         handler.on_skeleton(
             vec![ListItem::new_branch("abc".into(), "stale".into())],
@@ -1844,19 +1852,71 @@ mod tests {
             grid(),
         );
 
-        let received = rx.recv().expect("reconciled skeleton batch");
+        let received = rx.recv().expect("fresh skeleton batch");
         assert_eq!(received.len(), 1);
-        assert_eq!(received[0].output().as_ref(), "current");
+        assert_eq!(received[0].output().as_ref(), "");
 
         let shared = handler.shared_items.lock().unwrap();
         assert_eq!(shared.len(), 1);
-        assert_eq!(shared[0].output().as_ref(), "current");
+        assert_eq!(shared[0].output().as_ref(), "");
         drop(shared);
 
         let table = handler.shortcut_table.lock().unwrap();
-        assert_eq!(table.len(), 1);
-        assert!(table.contains_key("current"));
+        assert!(table.is_empty());
+        assert!(!table.contains_key("current"));
         assert!(!table.contains_key("stale"));
+    }
+
+    /// The kept-branch sibling of the drop replay: a pre-removal worktree row
+    /// collected by the current refresh must publish as the surviving branch
+    /// row, with its shortcut entry re-keyed to the branch token.
+    #[test]
+    fn current_skeleton_replays_morph_before_publication() {
+        let (handler, _test, rx) = make_handler();
+        let path = std::path::PathBuf::from("/tmp/wt-morph-replay");
+        let item = as_worktree(
+            ListItem::new_branch("abc".into(), "feature".into()),
+            &path,
+            WorktreeData::default(),
+        );
+        let worktree_token = worktree_output_token(&item, "feature");
+        let layout = crate::commands::list::layout::calculate_layout_with_width(
+            std::slice::from_ref(&item),
+            &crate::commands::list::columns::all_tasks(),
+            crate::commands::list::layout::Destination {
+                width: 80,
+                link_style: crate::commands::list::layout::LinkStyle::Expanded,
+            },
+            std::path::Path::new("/tmp"),
+            crate::commands::list::layout::ColumnSelection {
+                custom: &[],
+                selected: None,
+            },
+            crate::commands::list::layout::RepoFacts {
+                has_remote: false,
+                url_template: None,
+                max_pr_number: None,
+            },
+        );
+        handler.provide_layout(&layout);
+        handler
+            .row_mutations
+            .lock()
+            .unwrap()
+            .push(super::super::RowMutation::Morph {
+                worktree_token: worktree_token.clone(),
+                branch: "feature".to_string(),
+                default_branch: Some("main".to_string()),
+            });
+
+        handler.on_skeleton(vec![item], vec!["+ feature".into()], header("hdr"), grid());
+
+        let received = rx.recv().expect("reconciled skeleton batch");
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[1].output().as_ref(), "feature");
+        let table = handler.shortcut_table.lock().unwrap();
+        assert!(!table.contains_key(&worktree_token));
+        assert!(table.contains_key("feature"));
     }
 
     /// A superseded handler's `maybe_spawn_comments` is fully inert. Its

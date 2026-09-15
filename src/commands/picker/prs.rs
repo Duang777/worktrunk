@@ -37,7 +37,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -253,24 +253,15 @@ pub(super) struct PrsShared {
     /// that — so PR rows always land after the worktree rows, never in the
     /// reserved header slot.
     pub shared_items: Arc<Mutex<Vec<Arc<dyn SkimItem>>>>,
-    /// This refresh's identity token (see [`SpawnGeneration`]). Together with
-    /// the row-mutation token below, it gates row/shortcut publication; the
-    /// per-row `log`/`comments` fetches carry it so their fills can't land in
-    /// the preview cache a later refresh cleared.
+    /// This refresh's identity token (see [`SpawnGeneration`]). It gates
+    /// row/shortcut publication; the per-row `log`/`comments` fetches carry it
+    /// so their fills can't land in the preview cache a later refresh cleared.
     pub spawn_gen: SpawnGeneration,
-    /// Picker-lifetime generation bumped after a successful `alt-x` mutation,
-    /// plus the value this PR stream captured when its refresh started. A
-    /// forge call that began before removal completed must not append its
-    /// pre-removal rows after the skeleton was rejected.
-    pub row_mutation_generation: Arc<AtomicU64>,
-    pub row_mutation_generation_at_spawn: u64,
 }
 
 impl PrsShared {
     fn publication_is_current(&self) -> bool {
         self.spawn_gen.is_current()
-            && self.row_mutation_generation.load(Ordering::SeqCst)
-                == self.row_mutation_generation_at_spawn
     }
 }
 
@@ -1943,8 +1934,6 @@ mod tests {
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
             shared_items: Arc::new(Mutex::new(Vec::new())),
             spawn_gen: orchestrator.generation(),
-            row_mutation_generation: Arc::new(AtomicU64::new(0)),
-            row_mutation_generation_at_spawn: 0,
         };
         let (rtx, mut rrx) = tokio::sync::mpsc::channel(8);
         let render_tx = OnceLock::new();
@@ -1971,7 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn pr_rows_collected_before_removal_do_not_publish_after_reconciliation() {
+    fn pr_rows_collected_before_removal_publish_after_reconciliation() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let orchestrator = PreviewOrchestrator::new(test.repo.clone(), Arc::new(OnceLock::new()));
         let current_row: Arc<dyn SkimItem> = Arc::new("current".to_string());
@@ -1987,14 +1976,10 @@ mod tests {
             )]))),
             shared_items: Arc::new(Mutex::new(vec![current_row])),
             spawn_gen: orchestrator.generation(),
-            row_mutation_generation: Arc::new(AtomicU64::new(0)),
-            row_mutation_generation_at_spawn: 0,
         };
 
-        // Model successful alt-x reconciliation after this PR stream started.
-        shared
-            .row_mutation_generation
-            .fetch_add(1, Ordering::SeqCst);
+        // A successful alt-x reconciliation after this PR stream started is
+        // unrelated to the PR batch. The current spawn must still append it.
         let stale_items: Vec<Arc<dyn SkimItem>> = vec![Arc::new("pr:42".to_string())];
         let stale_shortcuts = vec![(
             "pr:42".to_string(),
@@ -2006,17 +1991,18 @@ mod tests {
         )];
 
         assert!(
-            !publish_pr_rows(&shared, &stale_items, stale_shortcuts),
-            "a pre-removal PR snapshot must be rejected"
+            publish_pr_rows(&shared, &stale_items, stale_shortcuts),
+            "row reconciliation must not discard an unrelated PR batch"
         );
         let rows = shared.shared_items.lock().unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].output().as_ref(), "current");
+        assert_eq!(rows[1].output().as_ref(), "pr:42");
         drop(rows);
         let shortcuts = shared.shortcut_table.lock().unwrap();
-        assert_eq!(shortcuts.len(), 1);
+        assert_eq!(shortcuts.len(), 2);
         assert!(shortcuts.contains_key("current"));
-        assert!(!shortcuts.contains_key("pr:42"));
+        assert!(shortcuts.contains_key("pr:42"));
     }
 
     #[test]
