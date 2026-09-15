@@ -107,7 +107,7 @@ use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -290,10 +290,9 @@ struct AltXRemover {
     /// row's entry from the worktree token to the branch token. Shared with the
     /// handler (which fills it) and the shortcut keybindings (which read it).
     shortcut_table: ShortcutTable,
-    /// Monotonic generation for successful alt-x mutations. Refresh handlers
-    /// capture it when they start and refuse to publish a pre-removal snapshot
-    /// after a removal completes.
-    row_mutation_generation: Arc<AtomicU64>,
+    /// Successful alt-x mutations that an in-flight refresh must replay before
+    /// publishing its newly collected snapshot.
+    row_mutations: RowMutationLog,
     /// The picker's full-width layout, handed over once the rows land. A morph
     /// renders the `/ branch` row on this grid so it lines up with the worktree
     /// rows. Shared with the handler (which fills it).
@@ -476,7 +475,7 @@ impl AltXRemover {
         let header_flash = Arc::clone(&self.header_flash);
         let shortcut_table = Arc::clone(&self.shortcut_table);
         let layout_slot = Arc::clone(&self.layout_slot);
-        let row_mutation_generation = Arc::clone(&self.row_mutation_generation);
+        let row_mutations = Arc::clone(&self.row_mutations);
         spawn_removal(format!("picker-remove-{selected_output}"), move || {
             let outcome = match Self::do_removal(&repo, &result, &approvals) {
                 Ok(outcome) => Some(outcome),
@@ -529,7 +528,7 @@ impl AltXRemover {
                     items: &items,
                     shortcut_table: &shortcut_table,
                     layout_slot: &layout_slot,
-                    row_mutation_generation: &row_mutation_generation,
+                    row_mutations: &row_mutations,
                     render_tx: &render_tx,
                 },
                 &selected_output,
@@ -645,7 +644,7 @@ impl AltXRemover {
         let shortcut_table = Arc::clone(&self.shortcut_table);
         let layout_slot = Arc::clone(&self.layout_slot);
         let header_flash = Arc::clone(&self.header_flash);
-        let row_mutation_generation = Arc::clone(&self.row_mutation_generation);
+        let row_mutations = Arc::clone(&self.row_mutations);
         spawn_removal(format!("picker-morph-{branch}"), move || {
             let outcome = match Self::do_removal(&repo, &result, &approvals) {
                 Ok(outcome) => Some(outcome),
@@ -676,7 +675,7 @@ impl AltXRemover {
                     items: &items,
                     shortcut_table: &shortcut_table,
                     layout_slot: &layout_slot,
-                    row_mutation_generation: &row_mutation_generation,
+                    row_mutations: &row_mutations,
                     render_tx: &render_tx,
                 },
                 &selected_output,
@@ -997,21 +996,93 @@ struct RowReconcileContext<'a> {
     items: &'a Arc<Mutex<Vec<Arc<dyn SkimItem>>>>,
     shortcut_table: &'a ShortcutTable,
     layout_slot: &'a items::LayoutSlot,
-    row_mutation_generation: &'a AtomicU64,
+    row_mutations: &'a RowMutationLog,
     render_tx: &'a Arc<OnceLock<tokio::sync::mpsc::Sender<Event>>>,
+}
+
+#[derive(Clone)]
+enum RowMutation {
+    Drop {
+        worktree_token: String,
+    },
+    Morph {
+        worktree_token: String,
+        branch: String,
+        default_branch: Option<String>,
+    },
+}
+
+type RowMutationLog = Arc<Mutex<Vec<RowMutation>>>;
+
+fn replay_row_mutations(
+    rows: &mut Vec<Arc<dyn SkimItem>>,
+    shortcuts: &mut std::collections::HashMap<String, items::RowShortcutData>,
+    layout_slot: &items::LayoutSlot,
+    mutations: &[RowMutation],
+) {
+    for mutation in mutations {
+        match mutation {
+            RowMutation::Drop { worktree_token } => {
+                rows.retain(|item| item.output().as_ref() != worktree_token);
+                shortcuts.remove(worktree_token);
+            }
+            RowMutation::Morph {
+                worktree_token,
+                branch,
+                default_branch,
+            } => {
+                let slots = {
+                    let layout = layout_slot.lock().unwrap();
+                    match (
+                        shortcuts
+                            .get(worktree_token)
+                            .and_then(|data| data.morph.as_ref()),
+                        layout.as_ref(),
+                    ) {
+                        (Some(handle), Some(layout)) => {
+                            let (branch_line, branch_local) = build_morph_branch_row(
+                                layout,
+                                &handle.item,
+                                branch,
+                                default_branch.as_deref(),
+                            );
+                            Some(MorphSlots {
+                                rendered: Arc::clone(&handle.rendered),
+                                morphed: Arc::clone(&handle.morphed),
+                                local_content: Arc::clone(&handle.local_content),
+                                branch_line,
+                                branch_local,
+                            })
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(slots) = slots {
+                    *slots.rendered.lock().unwrap() = slots.branch_line;
+                    slots.morphed.store(true, Ordering::Relaxed);
+                    *slots.local_content.lock().unwrap() = slots.branch_local;
+                    if let Some(data) = shortcuts.remove(worktree_token) {
+                        shortcuts.insert(branch.clone(), data);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn reconcile_successful_drop(ctx: RowReconcileContext<'_>, worktree_token: &str) {
     let changed = {
-        // Keep this lock across the generation bump and shortcut update. A
-        // refresh publishes those two structures under the same lock order,
-        // so it lands wholly before this reconciliation or observes the new
-        // generation and refuses its stale snapshot.
+        // Keep this lock across the shortcut update and mutation record. A
+        // refresh publishes under the same lock order, so it either lands
+        // wholly before this reconciliation or replays the drop into its new
+        // snapshot.
         let mut rows = ctx.items.lock().unwrap();
-        ctx.row_mutation_generation.fetch_add(1, Ordering::SeqCst);
         let original_len = rows.len();
         rows.retain(|item| item.output().as_ref() != worktree_token);
         ctx.shortcut_table.lock().unwrap().remove(worktree_token);
+        ctx.row_mutations.lock().unwrap().push(RowMutation::Drop {
+            worktree_token: worktree_token.to_string(),
+        });
         rows.len() != original_len
     };
 
@@ -1032,8 +1103,7 @@ fn reconcile_successful_morph(
 ) {
     let changed = {
         let rows = ctx.items.lock().unwrap();
-        ctx.row_mutation_generation.fetch_add(1, Ordering::SeqCst);
-        if rows
+        let changed = if rows
             .iter()
             .any(|item| item.output().as_ref() == worktree_token)
         {
@@ -1047,7 +1117,13 @@ fn reconcile_successful_morph(
             .is_some()
         } else {
             false
-        }
+        };
+        ctx.row_mutations.lock().unwrap().push(RowMutation::Morph {
+            worktree_token: worktree_token.to_string(),
+            branch: branch.to_string(),
+            default_branch: default_branch.map(str::to_string),
+        });
+        changed
     };
 
     if changed && let Some(tx) = ctx.render_tx.get() {
@@ -1546,7 +1622,7 @@ struct PipelineFactory {
     render_tx: Arc<OnceLock<tokio::sync::mpsc::Sender<Event>>>,
     shared_items: Arc<Mutex<Vec<Arc<dyn SkimItem>>>>,
     shortcut_table: ShortcutTable,
-    row_mutation_generation: Arc<AtomicU64>,
+    row_mutations: RowMutationLog,
     preview_cache: PreviewCache,
     orchestrator: Arc<PreviewOrchestrator>,
     stashed_warnings: Arc<Mutex<Vec<String>>>,
@@ -1651,7 +1727,7 @@ impl PipelineFactory {
         // This spawn's identity token, carried by everything the spawn
         // starts and superseded by the next refresh (see `SpawnGeneration`).
         let spawn_gen = self.orchestrator.generation();
-        let row_mutation_generation_at_spawn = self.row_mutation_generation.load(Ordering::SeqCst);
+        let row_mutation_cursor = self.row_mutations.lock().unwrap().len();
 
         // The skeleton→`--prs` handoff (column geometry + the branches already
         // shown for dedup). Fresh per spawn so an alt-r reload's `--prs` thread
@@ -1669,8 +1745,8 @@ impl PipelineFactory {
                 last_render_poke: Mutex::new(Instant::now()),
                 shared_items: Arc::clone(&self.shared_items),
                 shortcut_table: Arc::clone(&self.shortcut_table),
-                row_mutation_generation: Arc::clone(&self.row_mutation_generation),
-                row_mutation_generation_at_spawn,
+                row_mutations: Arc::clone(&self.row_mutations),
+                row_mutation_cursor,
                 rendered_slots: OnceLock::new(),
                 pr_status_slots: OnceLock::new(),
                 comments_fetched: OnceLock::new(),
@@ -1732,8 +1808,6 @@ impl PipelineFactory {
                 // earlier spawn's still-in-flight forge call can't add rows
                 // to this (or a later) spawn's list. See `prs::PrsShared`.
                 spawn_gen: spawn_gen.clone(),
-                row_mutation_generation: Arc::clone(&self.row_mutation_generation),
-                row_mutation_generation_at_spawn,
             };
             let prs_layout = prs::PrsLayout {
                 list_width: self.skim_list_width,
@@ -2051,7 +2125,7 @@ pub fn handle_picker(
     // fills it with worktree/branch rows and the `--prs` thread extends it; the
     // shortcut keybinding callbacks read it. See `ShortcutTable`.
     let shortcut_table: ShortcutTable = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let row_mutation_generation = Arc::new(AtomicU64::new(0));
+    let row_mutations: RowMutationLog = Arc::new(Mutex::new(Vec::new()));
 
     // Approvals snapshot for the session: alt-x removals consult it read-only
     // to filter the hook plan; see `approved_removal_plan`.
@@ -2070,7 +2144,7 @@ pub fn handle_picker(
         render_tx: Arc::clone(&render_tx),
         shared_items: Arc::clone(&shared_items),
         shortcut_table: Arc::clone(&shortcut_table),
-        row_mutation_generation: Arc::clone(&row_mutation_generation),
+        row_mutations: Arc::clone(&row_mutations),
         preview_cache: Arc::clone(&preview_cache),
         orchestrator: Arc::clone(&orchestrator),
         stashed_warnings: Arc::clone(&stashed_warnings),
@@ -2107,7 +2181,7 @@ pub fn handle_picker(
         render_tx: Arc::clone(&render_tx),
         stashed_warnings: Arc::clone(&stashed_warnings),
         shortcut_table: Arc::clone(&shortcut_table),
-        row_mutation_generation,
+        row_mutations,
         layout_slot: Arc::clone(&factory.layout_slot),
         header_flash: Arc::clone(&factory.header_flash),
     };
@@ -2760,7 +2834,6 @@ pub mod tests {
     use skim::prelude::SkimItem;
     use std::fs;
     use std::path::Path;
-    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
     use worktrunk::config::{Approvals, CommitGenerationConfig};
@@ -3489,7 +3562,7 @@ pub mod tests {
             render_tx,
             shared_items: Arc::new(Mutex::new(Vec::new())),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             preview_cache,
             orchestrator,
             stashed_warnings: Arc::new(Mutex::new(Vec::new())),
@@ -3522,7 +3595,7 @@ pub mod tests {
             render_tx: Arc::new(OnceLock::new()),
             stashed_warnings: Arc::clone(&factory.stashed_warnings),
             shortcut_table: Arc::clone(&factory.shortcut_table),
-            row_mutation_generation: Arc::clone(&factory.row_mutation_generation),
+            row_mutations: Arc::clone(&factory.row_mutations),
             layout_slot: Arc::clone(&factory.layout_slot),
             header_flash: Arc::clone(&factory.header_flash),
         }
@@ -4165,7 +4238,7 @@ pub mod tests {
             render_tx: Arc::new(OnceLock::new()),
             stashed_warnings: Arc::clone(&stashed),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             layout_slot: Arc::new(Mutex::new(None)),
             header_flash: Arc::new(super::items::HeaderFlash::default()),
         };
@@ -4254,7 +4327,7 @@ pub mod tests {
             render_tx: Arc::new(OnceLock::new()),
             stashed_warnings: Arc::clone(&stashed),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             layout_slot: Arc::new(Mutex::new(None)),
             header_flash: Arc::new(super::items::HeaderFlash::default()),
         };
@@ -5120,7 +5193,7 @@ pub mod tests {
             render_tx: Arc::clone(&render_tx),
             stashed_warnings: Arc::new(Mutex::new(Vec::new())),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             layout_slot: Arc::new(Mutex::new(None)),
             header_flash: Arc::clone(&header_flash),
         };
@@ -5187,7 +5260,7 @@ pub mod tests {
             render_tx: Arc::clone(&render_tx),
             stashed_warnings: Arc::new(Mutex::new(Vec::new())),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             layout_slot: Arc::new(Mutex::new(None)),
             header_flash: Arc::clone(&header_flash),
         };
@@ -5260,7 +5333,7 @@ pub mod tests {
             render_tx: Arc::clone(&render_tx),
             stashed_warnings: Arc::clone(&stashed),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            row_mutation_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            row_mutations: Arc::new(Mutex::new(Vec::new())),
             layout_slot: Arc::new(Mutex::new(None)),
             header_flash: Arc::clone(&header_flash),
         };
