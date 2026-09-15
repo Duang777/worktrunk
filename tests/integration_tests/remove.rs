@@ -2422,6 +2422,88 @@ approved-commands = ["{hook}"]
     );
 }
 
+/// A `pre-remove` hook may lock the worktree after planning to veto deletion.
+/// Both execution modes should treat that new lock as a successful preserve,
+/// matching merge cleanup; a lock present before planning still fails earlier.
+#[rstest]
+#[case::foreground(&["--foreground"])]
+#[case::background(&[])]
+fn test_pre_remove_hook_lock_preserves_worktree(
+    mut repo: TestRepo,
+    #[case] execution_args: &[&str],
+) {
+    let hook = "git worktree lock --reason hook .";
+    repo.write_project_config(&format!("pre-remove = {hook:?}"));
+    repo.commit("Add pre-remove hook");
+    repo.write_test_approvals(&format!(
+        r#"[projects."../origin"]
+approved-commands = [{hook:?}]
+"#
+    ));
+
+    let worktree_path = repo.add_worktree("feature-hook-lock");
+    let output = repo
+        .wt_command()
+        .arg("remove")
+        .args(execution_args)
+        .arg("feature-hook-lock")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "a hook-created lock should preserve the worktree; stderr:\n{stderr}"
+    );
+    assert!(
+        worktree_path.exists(),
+        "the locked worktree must be preserved"
+    );
+    repo.run_git(&["rev-parse", "--verify", "refs/heads/feature-hook-lock"]);
+    assert!(
+        stderr.contains("Worktree preserved (locked: hook)"),
+        "the preservation state must be reported; stderr:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[rstest]
+fn test_pre_remove_hook_lock_skips_reap(mut repo: TestRepo) {
+    let hook = "git worktree lock --reason hook .";
+    repo.write_project_config(&format!("pre-remove = {hook:?}"));
+    repo.commit("Add pre-remove hook");
+    repo.write_test_approvals(&format!(
+        r#"[projects."../origin"]
+approved-commands = [{hook:?}]
+"#
+    ));
+
+    let worktree_path = repo.add_worktree("feature-hook-lock-reap");
+    let output = repo
+        .wt_command()
+        .args(["remove", "--foreground", "--reap", "feature-hook-lock-reap"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "a hook-created lock should preserve the worktree; stderr:\n{stderr}"
+    );
+    assert!(
+        worktree_path.exists(),
+        "the locked worktree must be preserved"
+    );
+    assert!(
+        stderr.contains("Worktree preserved (locked: hook)"),
+        "the preservation state must be reported; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("processes to reap") && !stderr.contains("Reaping "),
+        "reaping must not run when the hook preserves the worktree; stderr:\n{stderr}"
+    );
+}
+
 #[rstest]
 fn test_pre_remove_hook_new_commit_retains_branch_in_background_remove(mut repo: TestRepo) {
     use crate::common::wait_for_worktree_removed;
@@ -3622,6 +3704,56 @@ fn block_staged_rename(repo: &TestRepo, worktree_path: &std::path::Path) -> std:
     staged_path
 }
 
+/// Post-removal hooks must not run while the legacy detached fallback still
+/// owns a live worktree. Removing the current worktree gives that fallback a
+/// deterministic one-second delay before `git worktree remove`.
+#[rstest]
+fn test_remove_background_fallback_waits_before_post_hooks(mut repo: TestRepo) {
+    let worktree_path = repo.add_worktree("feature-hook-order");
+    let staged_path = block_staged_rename(&repo, &worktree_path);
+    let post_remove_marker = repo.root_path().join("post-remove-order");
+    let post_switch_marker = repo.root_path().join("post-switch-order");
+
+    let worktree = shell_escape::unix::escape(worktree_path.to_slash_lossy());
+    let post_remove = shell_escape::unix::escape(post_remove_marker.to_slash_lossy());
+    let post_switch = shell_escape::unix::escape(post_switch_marker.to_slash_lossy());
+    repo.write_test_config(&format!(
+        r#"[post-remove]
+order = "if test -e {worktree}; then printf present; else printf absent; fi > {post_remove}"
+
+[post-switch]
+order = "if test -e {worktree}; then printf present; else printf absent; fi > {post_switch}"
+"#
+    ));
+
+    let output = repo
+        .wt_command()
+        .args(["remove", "feature-hook-order", "--force-delete", "--yes"])
+        .current_dir(&worktree_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "wt remove should start the legacy fallback:\n{stderr}"
+    );
+
+    crate::common::wait_for_file_content(&post_remove_marker);
+    crate::common::wait_for_file_content(&post_switch_marker);
+    assert_eq!(
+        fs::read_to_string(&post_remove_marker).unwrap(),
+        "absent",
+        "post-remove must observe the worktree as removed"
+    );
+    assert_eq!(
+        fs::read_to_string(&post_switch_marker).unwrap(),
+        "absent",
+        "post-switch must observe the worktree as removed"
+    );
+
+    let _ = std::fs::remove_file(&staged_path);
+}
+
 /// The rename-failure fallback honors `-D`: an unmerged branch is force-deleted
 /// in the legacy `git worktree remove && git branch -D` command.
 #[rstest]
@@ -4450,6 +4582,45 @@ fn test_remove_json(mut repo: TestRepo) {
 }
 
 #[rstest]
+fn test_remove_json_reports_hook_preserved_worktree(mut repo: TestRepo) {
+    let hook = "git worktree lock --reason hook .";
+    repo.write_project_config(&format!("pre-remove = {hook:?}"));
+    repo.commit("Add pre-remove hook");
+    let worktree_path = repo.add_worktree("feature-preserved");
+
+    let output = repo
+        .wt_command()
+        .args([
+            "remove",
+            "feature-preserved",
+            "--format=json",
+            "--yes",
+            "--foreground",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .ansi_strip()
+        .into_owned();
+    assert!(output.status.success(), "remove should succeed:\n{stderr}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    let items = json.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["branch"], "feature-preserved");
+    assert_eq!(
+        items[0]["worktree_outcome"], "preserved_locked",
+        "JSON must distinguish a preserved worktree from a completed removal:\n{stderr}"
+    );
+    assert_eq!(items[0]["branch_outcome"], "not_attempted");
+    assert!(
+        worktree_path.exists(),
+        "the JSON outcome must agree with the preserved worktree"
+    );
+}
+
+#[rstest]
 fn test_remove_json_branch_only(repo: TestRepo) {
     repo.commit("initial");
     // Create a branch without a worktree (already merged into main)
@@ -4699,6 +4870,11 @@ fn test_remove_fallback_warns_when_no_cas_tail(mut repo: TestRepo) {
         json.as_array().unwrap()[0]["branch_outcome"],
         "retained_unmerged",
         "a survival known in the foreground is not a deferral:\n{stderr}",
+    );
+    assert_eq!(
+        json.as_array().unwrap()[0]["worktree_outcome"],
+        "deferred",
+        "the detached fallback must not report worktree removal as completed:\n{stderr}",
     );
     // The branch survives with the hook's commit as its tip; the worktree
     // directory itself is the detached process's job, so it isn't asserted.

@@ -112,6 +112,49 @@ fn test_relocate_locked_worktree(repo: TestRepo) {
     );
 }
 
+/// Git's porcelain output quotes lock reasons before relocate renders them;
+/// raw controls must never reappear in the terminal output.
+#[rstest]
+fn test_relocate_locked_worktree_reason_is_terminal_safe(repo: TestRepo) {
+    use ansi_str::AnsiStr;
+
+    let wrong_path = worktree_parent(&repo).join("wrong-location");
+    repo.run_git(&[
+        "worktree",
+        "add",
+        "-b",
+        "feature",
+        wrong_path.to_str().unwrap(),
+    ]);
+    let reason = "trusted\nforged\x1b]8;;https://example.com\x07link\x1b]8;;\x07\u{202e}tail";
+    repo.run_git(&[
+        "worktree",
+        "lock",
+        "--reason",
+        reason,
+        wrong_path.to_str().unwrap(),
+    ]);
+
+    let output = repo
+        .wt_command()
+        .args(["step", "relocate"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .ansi_strip()
+        .into_owned();
+
+    assert!(
+        output.status.success(),
+        "relocate should succeed:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("trusted\nforged") && !stderr.contains("\x1b]8;;https://example.com"),
+        "lock reason must not inject lines or terminal hyperlinks: {stderr:?}"
+    );
+    assert!(wrong_path.exists(), "locked worktree must not move");
+}
+
 /// Test mixed success and skip (covers "Relocated X, skipped Y" output)
 #[rstest]
 fn test_relocate_mixed_success_and_skip(repo: TestRepo) {
