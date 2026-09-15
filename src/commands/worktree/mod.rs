@@ -97,6 +97,6 @@ pub use resolve::{compute_worktree_path, is_worktree_at_expected_path, worktree_
 pub(crate) use switch::SwitchPipeline;
 pub use switch::handle_switch_command;
 pub use types::{
-    BranchFate, MergeOperations, RemovalPlan, RetainedReason, SharedBranchCheckout,
+    BranchFate, MergeOperations, RemovalOutcome, RemovalPlan, RetainedReason, SharedBranchCheckout,
     SwitchBranchInfo, SwitchResult,
 };
