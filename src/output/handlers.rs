@@ -1480,6 +1480,10 @@ fn spawn_hooks_after_remove(
         display_path,
     )?;
 
+    if wait_for_worktree_removal {
+        announcer.wait_for_worktree_removal_since(checkpoint, ctx.worktree_path);
+    }
+
     // Post-switch: only when the user actually changed directory. Anchored at
     // the destination worktree (where the user landed) at the gate.
     if ctx.changed_directory {
@@ -1495,10 +1499,6 @@ fn spawn_hooks_after_remove(
             &[],
             display_path,
         )?;
-    }
-
-    if wait_for_worktree_removal {
-        announcer.wait_for_worktree_removal_since(checkpoint, ctx.worktree_path);
     }
 
     Ok(())

@@ -3608,11 +3608,12 @@ fn block_staged_rename(repo: &TestRepo, worktree_path: &std::path::Path) -> std:
     staged_path
 }
 
-/// Post-removal hooks must not run while the legacy detached fallback still
-/// owns a live worktree. Removing the current worktree gives that fallback a
-/// deterministic one-second delay before `git worktree remove`.
+/// `post-switch` runs at the destination immediately, while `post-remove`
+/// waits for the legacy detached fallback to finish deleting the old worktree.
+/// Removing the current worktree gives that fallback a deterministic one-second
+/// delay before `git worktree remove`.
 #[rstest]
-fn test_remove_background_fallback_waits_before_post_hooks(mut repo: TestRepo) {
+fn test_remove_background_fallback_waits_only_before_post_remove(mut repo: TestRepo) {
     let worktree_path = repo.add_worktree("feature-hook-order");
     let staged_path = block_staged_rename(&repo, &worktree_path);
     let post_remove_marker = repo.root_path().join("post-remove-order");
@@ -3642,17 +3643,18 @@ order = "if test -e {worktree}; then printf present; else printf absent; fi > {p
         "wt remove should start the legacy fallback:\n{stderr}"
     );
 
-    crate::common::wait_for_file_content(&post_remove_marker);
     crate::common::wait_for_file_content(&post_switch_marker);
+    assert_eq!(
+        fs::read_to_string(&post_switch_marker).unwrap(),
+        "present",
+        "post-switch must run at the destination without waiting for old worktree removal"
+    );
+
+    crate::common::wait_for_file_content(&post_remove_marker);
     assert_eq!(
         fs::read_to_string(&post_remove_marker).unwrap(),
         "absent",
         "post-remove must observe the worktree as removed"
-    );
-    assert_eq!(
-        fs::read_to_string(&post_switch_marker).unwrap(),
-        "absent",
-        "post-switch must observe the worktree as removed"
     );
 
     let _ = std::fs::remove_file(&staged_path);
