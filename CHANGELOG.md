@@ -12,7 +12,7 @@
 
 ### Fixed
 
-- **`wt remove` and `wt merge` no longer discard untracked files hidden by Git configuration**: `status.showUntrackedFiles = no` made the clean-worktree guard inherit a display preference, so a worktree containing only untracked files appeared clean and could be removed without `--force`. Safety checks now always include untracked files and name the path that blocks removal.
+- **`wt remove`, `wt merge`, and `wt step prune` no longer discard untracked files hidden by Git configuration**: `status.showUntrackedFiles = no` made the clean-worktree guard inherit a display preference, so a worktree containing only untracked files appeared clean and could be removed without `--force` — including by `wt step prune`, which removes unattended. Safety checks now always include untracked files and name the path that blocks removal. Auto-staging warnings for `wt merge`, `wt step commit`, and `wt step squash` likewise override the setting and enumerate every file that will be staged.
 
 - **`wt config plugins opencode install` no longer writes the plugin into the directory it was run from**: an exported-but-empty `OPENCODE_CONFIG_DIR` was taken at face value, so the install target collapsed to the relative path `plugins/worktrunk.ts` — typically somewhere inside the user's repository. `is_plugin_installed()` then read the plugin back from that same relative path, so the install reported success while OpenCode never saw it. An empty value now reads as unset, as it already did for `$CLAUDE_CONFIG_DIR` and `$PI_CONFIG_DIR`; the documented precedence `$OPENCODE_CONFIG_DIR` > `$XDG_CONFIG_HOME/opencode` > `~/.config/opencode` is unchanged. ([#4084](https://github.com/max-sixty/worktrunk/pull/4084))
 

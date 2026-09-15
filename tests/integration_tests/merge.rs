@@ -55,6 +55,38 @@ fn snapshot_merge_with_env(
     });
 }
 
+fn create_untracked_files_hidden_by_user_config(repo: &TestRepo, worktree: &Path) {
+    repo.run_git(&["config", "status.showUntrackedFiles", "no"]);
+    fs::create_dir(worktree.join("nested")).unwrap();
+    fs::write(worktree.join("nested/first.txt"), "first").unwrap();
+    fs::write(worktree.join("nested/second.txt"), "second").unwrap();
+
+    let hidden = repo
+        .git_command()
+        .args(["status", "--porcelain"])
+        .current_dir(worktree)
+        .run()
+        .unwrap();
+    assert!(
+        hidden.stdout.is_empty(),
+        "the fixture must demonstrate that the user setting hides both files"
+    );
+}
+
+fn assert_hidden_untracked_auto_staging_warning(output: &std::process::Output, command: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{command} should succeed; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Auto-staging 2 untracked paths:")
+            && stderr.contains("nested/first.txt")
+            && stderr.contains("nested/second.txt"),
+        "the warning must enumerate every hidden file that git add -A will stage; stderr:\n{stderr}"
+    );
+}
+
 #[rstest]
 fn test_merge_fast_forward(merge_scenario: (TestRepo, PathBuf)) {
     let (repo, feature_wt) = merge_scenario;
@@ -2506,6 +2538,27 @@ fn test_step_squash_with_no_hooks_flag(mut repo: TestRepo) {
 }
 
 #[rstest]
+fn test_step_squash_auto_staging_warns_about_untracked_files_hidden_by_user_config(
+    repo_with_multi_commit_feature: TestRepo,
+) {
+    let repo = &repo_with_multi_commit_feature;
+    let feature_wt = &repo.worktrees["feature"];
+    create_untracked_files_hidden_by_user_config(repo, feature_wt);
+
+    let output = repo
+        .wt_command()
+        .args(["step", "squash", "--no-hooks"])
+        .current_dir(feature_wt)
+        .env(
+            "WORKTRUNK_COMMIT__GENERATION__COMMAND",
+            "cat >/dev/null && echo 'squash: include hidden files'",
+        )
+        .output()
+        .unwrap();
+    assert_hidden_untracked_auto_staging_warning(&output, "step squash");
+}
+
+#[rstest]
 fn test_step_squash_with_stage_tracked_flag(mut repo: TestRepo) {
     let feature_wt = repo.add_worktree("feature");
 
@@ -2618,6 +2671,22 @@ fn test_step_commit_with_no_hooks_flag(repo: TestRepo) {
         );
         cmd
     });
+}
+
+#[rstest]
+fn test_step_commit_auto_staging_warns_about_untracked_files_hidden_by_user_config(repo: TestRepo) {
+    create_untracked_files_hidden_by_user_config(&repo, repo.root_path());
+
+    let output = repo
+        .wt_command()
+        .args(["step", "commit", "--no-hooks"])
+        .env(
+            "WORKTRUNK_COMMIT__GENERATION__COMMAND",
+            "cat >/dev/null && echo 'feat: include hidden files'",
+        )
+        .output()
+        .unwrap();
+    assert_hidden_untracked_auto_staging_warning(&output, "step commit");
 }
 
 #[rstest]
