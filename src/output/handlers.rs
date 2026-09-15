@@ -1,5 +1,6 @@
 //! Output handlers for worktree operations using the global output context
 
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -131,8 +132,26 @@ pub enum RemovalExecution {
 }
 
 enum BackgroundRemovalPlan {
-    Detached(String),
+    Detached {
+        command: String,
+        completion_marker: Option<PathBuf>,
+    },
     CompletedSynchronously,
+}
+
+struct BackgroundRemovalResult {
+    outcome: RemovalOutcome,
+    completion_marker: Option<PathBuf>,
+}
+
+fn create_removal_completion_marker(repo: &Repository) -> anyhow::Result<PathBuf> {
+    let marker_dir = repo.wt_dir().join("removal-markers");
+    fs::create_dir_all(&marker_dir)?;
+    let marker = tempfile::Builder::new()
+        .prefix("pending-")
+        .tempfile_in(marker_dir)?;
+    let (_file, path) = marker.keep()?;
+    Ok(path)
 }
 
 /// Print `live` when a complete porcelain record names the requested branch
@@ -165,27 +184,43 @@ const LIVE_BRANCH_WORKTREE_AWK: &str = r#"BEGIN { RS = ""; FS = "\n" }
 /// Shared sequence for both detached HEAD and branch background removal paths.
 /// The caller is responsible for output messages before this call, and hooks
 /// after. Returns whether the worktree removal completed synchronously or was
-/// handed to the detached fallback, plus the branch fate.
+/// handed to the detached fallback, plus the branch fate and the fallback's
+/// completion marker when post-remove hooks must wait.
 fn spawn_background_removal(
     repo: &Repository,
     main_path: &Path,
     removal: &BackgroundRemoval<'_>,
     log_label: &str,
     fallback_mode: BackgroundFallbackMode,
-) -> anyhow::Result<RemovalOutcome> {
+) -> anyhow::Result<BackgroundRemovalResult> {
     let (remove_plan, outcome) = execute_instant_removal_or_fallback(repo, removal, fallback_mode)?;
 
-    if let BackgroundRemovalPlan::Detached(remove_command) = remove_plan {
-        spawn_detached(
-            repo,
-            main_path,
-            &remove_command,
-            log_label,
-            &HookLog::Internal(InternalOp::Remove),
-            None,
-        )?;
-    }
-    Ok(outcome)
+    let completion_marker = match remove_plan {
+        BackgroundRemovalPlan::Detached {
+            command,
+            completion_marker,
+        } => {
+            if let Err(error) = spawn_detached(
+                repo,
+                main_path,
+                &command,
+                log_label,
+                &HookLog::Internal(InternalOp::Remove),
+                None,
+            ) {
+                if let Some(path) = &completion_marker {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(error);
+            }
+            completion_marker
+        }
+        BackgroundRemovalPlan::CompletedSynchronously => None,
+    };
+    Ok(BackgroundRemovalResult {
+        outcome,
+        completion_marker,
+    })
 }
 
 /// Execute instant worktree removal via rename-then-prune.
@@ -248,11 +283,14 @@ fn execute_instant_removal_or_fallback(
             let _ = std::fs::create_dir(worktree_path);
         }
         Ok((
-            BackgroundRemovalPlan::Detached(build_remove_command_staged(
-                &staged_path,
-                worktree_path,
-                changed_directory,
-            )),
+            BackgroundRemovalPlan::Detached {
+                command: build_remove_command_staged(
+                    &staged_path,
+                    worktree_path,
+                    changed_directory,
+                ),
+                completion_marker: None,
+            },
             RemovalOutcome::Completed(fate),
         ))
     } else {
@@ -292,6 +330,7 @@ fn execute_instant_removal_or_fallback(
         // all accepted), and the CAS protects against tip movement between
         // the foreground check and the detached delete. Force-delete keeps
         // the unconditional `git branch -D` shell tail.
+        let completion_marker = create_removal_completion_marker(repo)?;
         let (command, fate) = match (branch_name, deletion_mode) {
             (Some(branch), BranchDeletionMode::ForceDelete) => (
                 build_remove_command(
@@ -299,6 +338,7 @@ fn execute_instant_removal_or_fallback(
                     Some(branch),
                     force_worktree,
                     changed_directory,
+                    Some(&completion_marker),
                 ),
                 BranchFate::Deferred,
             ),
@@ -335,17 +375,27 @@ fn execute_instant_removal_or_fallback(
                         force_worktree,
                         changed_directory,
                         cas_tail.as_deref(),
+                        Some(&completion_marker),
                     ),
                     fate,
                 )
             }
             _ => (
-                build_remove_command(worktree_path, None, force_worktree, changed_directory),
+                build_remove_command(
+                    worktree_path,
+                    None,
+                    force_worktree,
+                    changed_directory,
+                    Some(&completion_marker),
+                ),
                 BranchFate::NotAttempted,
             ),
         };
         Ok((
-            BackgroundRemovalPlan::Detached(command),
+            BackgroundRemovalPlan::Detached {
+                command,
+                completion_marker: Some(completion_marker),
+            },
             RemovalOutcome::Deferred(fate),
         ))
     }
@@ -491,9 +541,15 @@ fn build_remove_command_with_tail(
     force_worktree: bool,
     changed_directory: bool,
     tail: Option<&str>,
+    completion_marker: Option<&Path>,
 ) -> String {
-    let remove_command =
-        build_remove_command(worktree_path, None, force_worktree, changed_directory);
+    let remove_command = build_remove_command(
+        worktree_path,
+        None,
+        force_worktree,
+        changed_directory,
+        completion_marker,
+    );
     match tail {
         Some(tail) => format!("{remove_command} && {tail}"),
         None => remove_command,
@@ -1450,7 +1506,7 @@ fn spawn_hooks_after_remove(
     ctx: &WorktreeRemovalContext<'_>,
     removed_branch: Option<&str>,
     announcer: &mut HookAnnouncer<'_>,
-    wait_for_worktree_removal: bool,
+    removal_completion_marker: Option<&Path>,
 ) -> anyhow::Result<()> {
     let checkpoint = announcer.checkpoint();
 
@@ -1496,8 +1552,8 @@ fn spawn_hooks_after_remove(
         display_path,
     )?;
 
-    if wait_for_worktree_removal {
-        announcer.wait_for_worktree_removal_since(checkpoint, ctx.worktree_path);
+    if let Some(marker) = removal_completion_marker {
+        announcer.wait_for_removal_completion_since(checkpoint, marker);
     }
 
     // Post-switch: only when the user actually changed directory. Anchored at
@@ -1872,7 +1928,7 @@ fn handle_detached_removed_worktree_output(
     ctx: &WorktreeRemovalContext<'_>,
     announcer: &mut HookAnnouncer<'_>,
 ) -> anyhow::Result<RemovalOutcome> {
-    let outcome = if matches!(ctx.execution, RemovalExecution::Foreground) {
+    let removal = if matches!(ctx.execution, RemovalExecution::Foreground) {
         eprintln!(
             "{}",
             progress_message(cformat!(
@@ -1912,7 +1968,10 @@ fn handle_detached_removed_worktree_output(
             ))
             .append(&stats_paren)
         );
-        RemovalOutcome::Completed(BranchFate::NotAttempted)
+        BackgroundRemovalResult {
+            outcome: RemovalOutcome::Completed(BranchFate::NotAttempted),
+            completion_marker: None,
+        }
     } else {
         let path_display = format_path_for_display(ctx.worktree_path);
         eprintln!(
@@ -1948,10 +2007,10 @@ fn handle_detached_removed_worktree_output(
         ctx,
         None,
         announcer,
-        matches!(&outcome, RemovalOutcome::Deferred(_)),
+        removal.completion_marker.as_deref(),
     )?;
     stderr().flush()?;
-    Ok(outcome)
+    Ok(removal.outcome)
 }
 
 fn handle_named_removed_worktree_foreground(
@@ -2008,7 +2067,7 @@ fn handle_named_removed_worktree_foreground(
     }
     print_switch_message_if_changed(ctx.changed_directory, ctx.main_path)?;
 
-    spawn_hooks_after_remove(repo, ctx, Some(branch_name), announcer, false)?;
+    spawn_hooks_after_remove(repo, ctx, Some(branch_name), announcer, None)?;
     stderr().flush()?;
     Ok(fate)
 }
@@ -2040,7 +2099,7 @@ fn handle_named_removed_worktree_background(
     let planner_expected_retention =
         ctx.deletion_mode.should_keep() || ctx.integration_reason.is_none();
 
-    let outcome = spawn_background_removal(
+    let removal = spawn_background_removal(
         repo,
         ctx.main_path,
         &BackgroundRemoval {
@@ -2061,10 +2120,10 @@ fn handle_named_removed_worktree_background(
         ctx,
         Some(branch_name),
         announcer,
-        matches!(&outcome, RemovalOutcome::Deferred(_)),
+        removal.completion_marker.as_deref(),
     )?;
     stderr().flush()?;
-    Ok(outcome)
+    Ok(removal.outcome)
 }
 
 /// Execute and narrate a [`RemovalPlan::Worktree`] plan.
@@ -2173,7 +2232,7 @@ fn remove_removed_worktree_silently(
 
     // Post-remove (and post-switch when the picker cd'd away) hooks — registered
     // onto the caller's announcer, which `flush`es after this returns.
-    spawn_hooks_after_remove(repo, ctx, ctx.branch_name, announcer, false)?;
+    spawn_hooks_after_remove(repo, ctx, ctx.branch_name, announcer, None)?;
     Ok(fate)
 }
 
@@ -2404,7 +2463,7 @@ mod tests {
     #[test]
     fn build_remove_command_with_tail_appends_only_when_present() {
         let path = Path::new("/tmp/wt");
-        let bare = build_remove_command_with_tail(path, false, false, None);
+        let bare = build_remove_command_with_tail(path, false, false, None, None);
         // No tail → the command is exactly the bare worktree removal.
         assert!(!bare.contains("&&"));
         let tailed = build_remove_command_with_tail(
@@ -2412,6 +2471,7 @@ mod tests {
             false,
             false,
             Some("git update-ref -d refs/heads/x deadbeef"),
+            None,
         );
         // A tail is chained with `&&` so it runs only after a successful removal.
         assert_eq!(
