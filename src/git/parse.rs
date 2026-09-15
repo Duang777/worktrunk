@@ -174,9 +174,11 @@ pub fn parse_porcelain_z(output: &str) -> Vec<String> {
 ///
 /// Format: "XY path\0" where XY is the status code and path follows a space.
 /// Untracked files have status "??".
-pub fn parse_untracked_files(status_output: &str) -> Vec<String> {
+pub fn parse_untracked_files(status_output: &[u8]) -> Vec<Vec<u8>> {
     let mut files = Vec::new();
-    let mut entries = status_output.split('\0').filter(|s| !s.is_empty());
+    let mut entries = status_output
+        .split(|byte| *byte == b'\0')
+        .filter(|s| !s.is_empty());
 
     while let Some(entry) = entries.next() {
         // Format: "XY PATH" where XY is 2 status chars, space, then path
@@ -188,12 +190,12 @@ pub fn parse_untracked_files(status_output: &str) -> Vec<String> {
         let path = &entry[3..];
 
         // Only collect untracked files
-        if status == "??" {
-            files.push(path.to_string());
+        if status == b"??" {
+            files.push(path.to_vec());
         }
 
         // Skip old path for renames/copies (we don't care about them here)
-        if status.contains(['R', 'C']) {
+        if status.contains(&b'R') || status.contains(&b'C') {
             entries.next();
         }
     }
@@ -469,29 +471,32 @@ mod tests {
 
     #[test]
     fn test_parse_untracked_files_empty() {
-        assert!(parse_untracked_files("").is_empty());
+        assert!(parse_untracked_files(b"").is_empty());
     }
 
     #[test]
     fn test_parse_untracked_files_only_untracked() {
-        let output = "?? new_file.txt\0?? another.rs\0";
+        let output = b"?? new_file.txt\0?? another.rs\0";
         let files = parse_untracked_files(output);
-        assert_eq!(files, vec!["new_file.txt", "another.rs"]);
+        assert_eq!(
+            files,
+            vec![b"new_file.txt".to_vec(), b"another.rs".to_vec()]
+        );
     }
 
     #[test]
     fn test_parse_untracked_files_filters_tracked() {
-        let output = " M modified.rs\0?? untracked.txt\0A  added.rs\0";
+        let output = b" M modified.rs\0?? untracked.txt\0A  added.rs\0";
         let files = parse_untracked_files(output);
-        assert_eq!(files, vec!["untracked.txt"]);
+        assert_eq!(files, vec![b"untracked.txt".to_vec()]);
     }
 
     #[test]
     fn test_parse_untracked_files_skips_rename_old_path() {
         // Rename entry has an extra NUL-separated old path that must be skipped
-        let output = "R  new.rs\0old.rs\0?? untracked.txt\0";
+        let output = b"R  new.rs\0old.rs\0?? untracked.txt\0";
         let files = parse_untracked_files(output);
-        assert_eq!(files, vec!["untracked.txt"]);
+        assert_eq!(files, vec![b"untracked.txt".to_vec()]);
     }
 
     #[test]
@@ -499,22 +504,28 @@ mod tests {
         // A rename/copy in either status column has an extra old-path field.
         // Make that old path look like another rename so a parser that treats
         // it as a status entry will consume the real untracked record.
-        let output = " R new.rs\0R  old.rs\0?? untracked.txt\0";
+        let output = b" R new.rs\0R  old.rs\0?? untracked.txt\0";
         let files = parse_untracked_files(output);
-        assert_eq!(files, vec!["untracked.txt"]);
+        assert_eq!(files, vec![b"untracked.txt".to_vec()]);
     }
 
     #[test]
     fn test_parse_untracked_files_no_untracked() {
-        let output = " M modified.rs\0A  added.rs\0";
+        let output = b" M modified.rs\0A  added.rs\0";
         let files = parse_untracked_files(output);
         assert!(files.is_empty());
     }
 
     #[test]
     fn test_parse_untracked_files_spaces_in_path() {
-        let output = "?? path with spaces/new file.txt\0";
+        let output = b"?? path with spaces/new file.txt\0";
         let files = parse_untracked_files(output);
-        assert_eq!(files, vec!["path with spaces/new file.txt"]);
+        assert_eq!(files, vec![b"path with spaces/new file.txt".to_vec()]);
+    }
+
+    #[test]
+    fn test_parse_untracked_files_preserves_non_utf8_bytes() {
+        let files = parse_untracked_files(b"?? invalid-\xff.txt\0");
+        assert_eq!(files, vec![b"invalid-\xff.txt".to_vec()]);
     }
 }
