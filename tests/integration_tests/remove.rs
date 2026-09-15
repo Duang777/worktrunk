@@ -3608,16 +3608,61 @@ fn block_staged_rename(repo: &TestRepo, worktree_path: &std::path::Path) -> std:
     staged_path
 }
 
+#[cfg(unix)]
+fn write_recreating_git_wrapper(bin_dir: &Path, real_git: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let real_git = shell_escape::unix::escape(real_git.to_slash_lossy());
+    let script = format!(
+        r#"#!/bin/sh
+if [ "$1" = worktree ] && [ "$2" = remove ]; then
+    (
+        while test -e "$WT_TEST_RECREATE_PATH"; do :; done
+        mkdir -p -- "$WT_TEST_RECREATE_PATH"
+        : > "$WT_TEST_RECREATE_READY"
+        sleep 1
+        rmdir -- "$WT_TEST_RECREATE_PATH"
+        rm -f -- "$WT_TEST_RECREATE_READY"
+    ) </dev/null >/dev/null 2>&1 &
+    watcher=$!
+    {real_git} "$@"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        while test ! -e "$WT_TEST_RECREATE_READY"; do :; done
+    else
+        kill "$watcher" 2>/dev/null || :
+    fi
+    exit "$status"
+fi
+exec {real_git} "$@"
+"#
+    );
+    let wrapper = bin_dir.join("git");
+    fs::write(&wrapper, script).unwrap();
+    let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(wrapper, permissions).unwrap();
+}
+
 /// `post-switch` runs at the destination immediately, while `post-remove`
 /// waits for the legacy detached fallback to finish deleting the old worktree.
 /// Removing the current worktree gives that fallback a deterministic one-second
 /// delay before `git worktree remove`.
+#[cfg(unix)]
 #[rstest]
 fn test_remove_background_fallback_waits_only_before_post_remove(mut repo: TestRepo) {
     let worktree_path = repo.add_worktree("feature-hook-order");
     let staged_path = block_staged_rename(&repo, &worktree_path);
+    let wrapper_dir = tempfile::tempdir().unwrap();
+    write_recreating_git_wrapper(wrapper_dir.path(), &which::which("git").unwrap());
+    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    paths.insert(0, wrapper_dir.path().to_path_buf());
+    let wrapped_path = std::env::join_paths(paths).unwrap();
     let post_remove_marker = repo.root_path().join("post-remove-order");
     let post_switch_marker = repo.root_path().join("post-switch-order");
+    let recreate_ready = repo.root_path().join("recreate-ready");
 
     let worktree = shell_escape::unix::escape(worktree_path.to_slash_lossy());
     let post_remove = shell_escape::unix::escape(post_remove_marker.to_slash_lossy());
@@ -3635,6 +3680,9 @@ order = "if test -e {worktree}; then printf present; else printf absent; fi > {p
         .wt_command()
         .args(["remove", "feature-hook-order", "--force-delete", "--yes"])
         .current_dir(&worktree_path)
+        .env("PATH", wrapped_path)
+        .env("WT_TEST_RECREATE_PATH", &worktree_path)
+        .env("WT_TEST_RECREATE_READY", &recreate_ready)
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3653,10 +3701,17 @@ order = "if test -e {worktree}; then printf present; else printf absent; fi > {p
     crate::common::wait_for_file_content(&post_remove_marker);
     assert_eq!(
         fs::read_to_string(&post_remove_marker).unwrap(),
-        "absent",
-        "post-remove must observe the worktree as removed"
+        "present",
+        "post-remove must follow removal completion even if the old path is reused"
+    );
+    let completion_markers =
+        crate::common::resolve_git_common_dir(repo.root_path()).join("wt/removal-markers");
+    assert!(
+        fs::read_dir(completion_markers).unwrap().next().is_none(),
+        "successful fallback removal must consume its completion marker"
     );
 
+    crate::common::wait_for("recreated path removed", || !worktree_path.exists());
     let _ = std::fs::remove_file(&staged_path);
 }
 

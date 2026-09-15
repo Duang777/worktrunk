@@ -91,7 +91,7 @@ pub(super) struct PipelineSpec {
     pub hook_type: HookType,
     pub source: HookSource,
     #[serde(default)]
-    pub wait_for_worktree_removal: Option<PathBuf>,
+    pub removal_completion_marker: Option<PathBuf>,
     pub steps: Vec<PreparedStep>,
 }
 
@@ -113,8 +113,8 @@ pub fn run_pipeline() -> anyhow::Result<()> {
     let spec: PipelineSpec =
         serde_json::from_str(&contents).context("failed to deserialize pipeline spec")?;
 
-    if let Some(path) = spec.wait_for_worktree_removal.as_deref() {
-        wait_for_worktree_removal(path)?;
+    if let Some(marker) = spec.removal_completion_marker.as_deref() {
+        wait_for_removal_completion(marker)?;
     }
 
     let repo =
@@ -156,20 +156,22 @@ pub fn run_pipeline() -> anyhow::Result<()> {
 
 /// Wait until a detached legacy removal has physically removed its worktree.
 ///
-/// The fallback can outlive the foreground `wt` process. Post-remove hooks use
-/// this condition so their first command cannot observe the old worktree. A
-/// bounded wait prevents a failed detached removal from leaving hook runners
+/// The foreground creates a unique marker before spawning the fallback, and
+/// the fallback removes it immediately after `git worktree remove` succeeds.
+/// Unlike polling the worktree path, this remains correct if another process
+/// creates a new directory or worktree at the same path before the hook starts.
+/// A bounded wait prevents a failed detached removal from leaving hook runners
 /// around indefinitely.
-fn wait_for_worktree_removal(path: &Path) -> anyhow::Result<()> {
+fn wait_for_removal_completion(marker: &Path) -> anyhow::Result<()> {
     let started = Instant::now();
     loop {
-        match fs::symlink_metadata(path) {
+        match fs::symlink_metadata(marker) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
-                        "failed to inspect deferred worktree removal: {}",
-                        path.display()
+                        "failed to inspect deferred removal marker: {}",
+                        marker.display()
                     )
                 });
             }
@@ -178,8 +180,8 @@ fn wait_for_worktree_removal(path: &Path) -> anyhow::Result<()> {
             }
             Ok(_) => {
                 anyhow::bail!(
-                    "timed out waiting for deferred worktree removal: {}",
-                    path.display()
+                    "timed out waiting for deferred removal marker: {}",
+                    marker.display()
                 );
             }
         }
@@ -462,5 +464,27 @@ mod tests {
         assert_eq!(message, "command failed with exit code 2: my-step");
         // Non-signal errors must NOT trip the interrupt abort path.
         assert_eq!(err.interrupt_signal(), None);
+    }
+
+    #[test]
+    fn removal_completion_does_not_depend_on_the_old_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("pending");
+        let reused_path = temp.path().join("reused-worktree");
+        fs::write(&marker, "").unwrap();
+        fs::create_dir(&reused_path).unwrap();
+
+        let marker_to_remove = marker.clone();
+        let remover = std::thread::spawn(move || {
+            std::thread::sleep(REMOVAL_WAIT_INTERVAL);
+            fs::remove_file(marker_to_remove).unwrap();
+        });
+
+        wait_for_removal_completion(&marker).unwrap();
+        remover.join().unwrap();
+        assert!(
+            reused_path.exists(),
+            "a replacement at the old path must not block post-remove hooks"
+        );
     }
 }
