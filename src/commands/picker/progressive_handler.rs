@@ -261,14 +261,41 @@ impl PickerHandler {
 fn collect_shown_branches(items: &[ListItem]) -> HashSet<String> {
     let mut shown = HashSet::new();
     for item in items {
-        let Some(name) = item.branch() else {
-            continue;
-        };
-        shown.insert(name.to_string());
-        if matches!(item.kind(), ItemKind::Branch(BranchScope::Remote))
-            && let Some((_, bare)) = name.split_once('/')
-        {
-            shown.insert(bare.to_string());
+        add_shown_branch(&mut shown, item);
+    }
+    shown
+}
+
+fn add_shown_branch(shown: &mut HashSet<String>, item: &ListItem) {
+    let Some(name) = item.branch() else {
+        return;
+    };
+    shown.insert(name.to_string());
+    if matches!(item.kind(), ItemKind::Branch(BranchScope::Remote))
+        && let Some((_, bare)) = name.split_once('/')
+    {
+        shown.insert(bare.to_string());
+    }
+}
+
+/// Rebuild the PR dedup set from rows that survived mutation replay.
+///
+/// A worktree removal may re-key its row to the branch token (morph) or remove
+/// both tokens (drop), so either the original token or the branch token proves
+/// that the source row is still present in the published shortcut snapshot.
+fn collect_published_branches(
+    items: &[Arc<ListItem>],
+    shortcuts: &HashMap<String, RowShortcutData>,
+) -> HashSet<String> {
+    let mut shown = HashSet::new();
+    for item in items {
+        let branch_name = item.branch_name();
+        let is_published = shortcuts.contains_key(&worktree_output_token(item, branch_name))
+            || item
+                .branch()
+                .is_some_and(|branch| shortcuts.contains_key(branch));
+        if is_published {
+            add_shown_branch(&mut shown, item);
         }
     }
     shown
@@ -293,7 +320,7 @@ impl PickerProgressHandler for PickerHandler {
         // call its rows could reach skim's channel first and a PR row would take the
         // reserved header slot (`header_lines(1)`), displacing the real header. The
         // grid is width-stable, so the brief extra wait costs nothing.
-        let shown_branches = collect_shown_branches(&items);
+        let mut shown_branches = collect_shown_branches(&items);
 
         let mut slots: Vec<Arc<Mutex<String>>> = Vec::with_capacity(items.len());
         let mut pr_slots: Vec<PrStatusSlot> = Vec::with_capacity(items.len());
@@ -514,6 +541,7 @@ impl PickerProgressHandler for PickerHandler {
                         .get(self.row_mutation_cursor..)
                         .unwrap_or_default(),
                 );
+                shown_branches = collect_published_branches(&list_items, &shortcut_map);
                 *list = skim_items;
                 *table = shortcut_map;
             }
@@ -1865,6 +1893,16 @@ mod tests {
         assert!(table.is_empty());
         assert!(!table.contains_key("current"));
         assert!(!table.contains_key("stale"));
+        drop(table);
+
+        let skeleton = handler
+            .grid_slot
+            .wait(Duration::ZERO)
+            .expect("PR skeleton handoff");
+        assert!(
+            !skeleton.shown_branches.contains("stale"),
+            "a replayed drop must let the matching open PR remain visible"
+        );
     }
 
     /// The kept-branch sibling of the drop replay: a pre-removal worktree row

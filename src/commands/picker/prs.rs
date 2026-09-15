@@ -108,7 +108,7 @@ impl GridSlot {
     /// collect exiting without a skeleton (zero items, error) — the rows then
     /// render freeform rather than never, and with no shown-branch set every PR
     /// lists (nothing to dedup against).
-    fn wait(&self, timeout: Duration) -> Option<Skeleton> {
+    pub(super) fn wait(&self, timeout: Duration) -> Option<Skeleton> {
         let (slot, _) = self
             .ready
             .wait_timeout_while(self.slot.lock().unwrap(), timeout, |s| s.is_none())
