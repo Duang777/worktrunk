@@ -156,10 +156,10 @@ pub fn run_pipeline() -> anyhow::Result<()> {
 
 /// Wait until a detached legacy removal has physically removed its worktree.
 ///
-/// The fallback can outlive the foreground `wt` process. Post-remove and
-/// removal-triggered post-switch hooks use this condition so their first
-/// command cannot observe the old worktree. A bounded wait prevents a failed
-/// detached removal from leaving hook runners around indefinitely.
+/// The fallback can outlive the foreground `wt` process. Post-remove hooks use
+/// this condition so their first command cannot observe the old worktree. A
+/// bounded wait prevents a failed detached removal from leaving hook runners
+/// around indefinitely.
 fn wait_for_worktree_removal(path: &Path) -> anyhow::Result<()> {
     let started = Instant::now();
     loop {
