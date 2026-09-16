@@ -1047,6 +1047,7 @@ impl<'a> WorkingTree<'a> {
         let args = [
             "diff",
             "--cached",
+            "--no-relative",
             "--quiet",
             "--exit-code",
             "--ignore-submodules=none",
@@ -1347,6 +1348,22 @@ mod tests {
         assert!(
             error.to_string().contains("git diff"),
             "expected the failed git command, got {error:#}"
+        );
+    }
+
+    #[test]
+    fn has_staged_changes_checks_whole_worktree_from_nested_discovery_path() {
+        let test = TestRepo::with_initial_commit();
+        let nested = test.root_path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(test.root_path().join("staged.txt"), "staged\n").unwrap();
+        test.run_git(&["add", "staged.txt"]);
+        test.run_git(&["config", "diff.relative", "true"]);
+
+        let repo = Repository::at(&nested).unwrap();
+        assert!(
+            repo.current_worktree().has_staged_changes().unwrap(),
+            "staged paths outside the discovery directory must remain visible"
         );
     }
 
