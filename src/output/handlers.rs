@@ -1,6 +1,5 @@
 //! Output handlers for worktree operations using the global output context
 
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -134,24 +133,14 @@ pub enum RemovalExecution {
 enum BackgroundRemovalPlan {
     Detached {
         command: String,
-        completion_marker: Option<PathBuf>,
+        removal_git_dir: Option<PathBuf>,
     },
     CompletedSynchronously,
 }
 
 struct BackgroundRemovalResult {
     outcome: RemovalOutcome,
-    completion_marker: Option<PathBuf>,
-}
-
-fn create_removal_completion_marker(repo: &Repository) -> anyhow::Result<PathBuf> {
-    let marker_dir = repo.wt_dir().join("removal-markers");
-    fs::create_dir_all(&marker_dir)?;
-    let marker = tempfile::Builder::new()
-        .prefix("pending-")
-        .tempfile_in(marker_dir)?;
-    let (_file, path) = marker.keep()?;
-    Ok(path)
+    removal_git_dir: Option<PathBuf>,
 }
 
 /// Print `live` when a complete porcelain record names the requested branch
@@ -184,8 +173,8 @@ const LIVE_BRANCH_WORKTREE_AWK: &str = r#"BEGIN { RS = ""; FS = "\n" }
 /// Shared sequence for both detached HEAD and branch background removal paths.
 /// The caller is responsible for output messages before this call, and hooks
 /// after. Returns whether the worktree removal completed synchronously or was
-/// handed to the detached fallback, plus the branch fate and the fallback's
-/// completion marker when post-remove hooks must wait.
+/// handed to the detached fallback, plus the branch fate and the git directory
+/// whose disappearance signals fallback completion.
 fn spawn_background_removal(
     repo: &Repository,
     main_path: &Path,
@@ -195,31 +184,26 @@ fn spawn_background_removal(
 ) -> anyhow::Result<BackgroundRemovalResult> {
     let (remove_plan, outcome) = execute_instant_removal_or_fallback(repo, removal, fallback_mode)?;
 
-    let completion_marker = match remove_plan {
+    let removal_git_dir = match remove_plan {
         BackgroundRemovalPlan::Detached {
             command,
-            completion_marker,
+            removal_git_dir,
         } => {
-            if let Err(error) = spawn_detached(
+            spawn_detached(
                 repo,
                 main_path,
                 &command,
                 log_label,
                 &HookLog::Internal(InternalOp::Remove),
                 None,
-            ) {
-                if let Some(path) = &completion_marker {
-                    let _ = fs::remove_file(path);
-                }
-                return Err(error);
-            }
-            completion_marker
+            )?;
+            removal_git_dir
         }
         BackgroundRemovalPlan::CompletedSynchronously => None,
     };
     Ok(BackgroundRemovalResult {
         outcome,
-        completion_marker,
+        removal_git_dir,
     })
 }
 
@@ -289,7 +273,7 @@ fn execute_instant_removal_or_fallback(
                     worktree_path,
                     changed_directory,
                 ),
-                completion_marker: None,
+                removal_git_dir: None,
             },
             RemovalOutcome::Completed(fate),
         ))
@@ -330,7 +314,7 @@ fn execute_instant_removal_or_fallback(
         // all accepted), and the CAS protects against tip movement between
         // the foreground check and the detached delete. Force-delete keeps
         // the unconditional `git branch -D` shell tail.
-        let completion_marker = create_removal_completion_marker(repo)?;
+        let removal_git_dir = repo.worktree_at(worktree_path).git_dir()?;
         let (command, fate) = match (branch_name, deletion_mode) {
             (Some(branch), BranchDeletionMode::ForceDelete) => (
                 build_remove_command(
@@ -338,7 +322,6 @@ fn execute_instant_removal_or_fallback(
                     Some(branch),
                     force_worktree,
                     changed_directory,
-                    Some(&completion_marker),
                 ),
                 BranchFate::Deferred,
             ),
@@ -375,26 +358,19 @@ fn execute_instant_removal_or_fallback(
                         force_worktree,
                         changed_directory,
                         cas_tail.as_deref(),
-                        Some(&completion_marker),
                     ),
                     fate,
                 )
             }
             _ => (
-                build_remove_command(
-                    worktree_path,
-                    None,
-                    force_worktree,
-                    changed_directory,
-                    Some(&completion_marker),
-                ),
+                build_remove_command(worktree_path, None, force_worktree, changed_directory),
                 BranchFate::NotAttempted,
             ),
         };
         Ok((
             BackgroundRemovalPlan::Detached {
                 command,
-                completion_marker: Some(completion_marker),
+                removal_git_dir: Some(removal_git_dir),
             },
             RemovalOutcome::Deferred(fate),
         ))
@@ -541,15 +517,9 @@ fn build_remove_command_with_tail(
     force_worktree: bool,
     changed_directory: bool,
     tail: Option<&str>,
-    completion_marker: Option<&Path>,
 ) -> String {
-    let remove_command = build_remove_command(
-        worktree_path,
-        None,
-        force_worktree,
-        changed_directory,
-        completion_marker,
-    );
+    let remove_command =
+        build_remove_command(worktree_path, None, force_worktree, changed_directory);
     match tail {
         Some(tail) => format!("{remove_command} && {tail}"),
         None => remove_command,
@@ -1506,7 +1476,7 @@ fn spawn_hooks_after_remove(
     ctx: &WorktreeRemovalContext<'_>,
     removed_branch: Option<&str>,
     announcer: &mut HookAnnouncer<'_>,
-    removal_completion_marker: Option<&Path>,
+    removal_git_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let checkpoint = announcer.checkpoint();
 
@@ -1552,8 +1522,8 @@ fn spawn_hooks_after_remove(
         display_path,
     )?;
 
-    if let Some(marker) = removal_completion_marker {
-        announcer.wait_for_removal_completion_since(checkpoint, marker);
+    if let Some(git_dir) = removal_git_dir {
+        announcer.wait_for_worktree_git_dir_removal_since(checkpoint, git_dir);
     }
 
     // Post-switch: only when the user actually changed directory. Anchored at
@@ -1970,7 +1940,7 @@ fn handle_detached_removed_worktree_output(
         );
         BackgroundRemovalResult {
             outcome: RemovalOutcome::Completed(BranchFate::NotAttempted),
-            completion_marker: None,
+            removal_git_dir: None,
         }
     } else {
         let path_display = format_path_for_display(ctx.worktree_path);
@@ -2007,7 +1977,7 @@ fn handle_detached_removed_worktree_output(
         ctx,
         None,
         announcer,
-        removal.completion_marker.as_deref(),
+        removal.removal_git_dir.as_deref(),
     )?;
     stderr().flush()?;
     Ok(removal.outcome)
@@ -2120,7 +2090,7 @@ fn handle_named_removed_worktree_background(
         ctx,
         Some(branch_name),
         announcer,
-        removal.completion_marker.as_deref(),
+        removal.removal_git_dir.as_deref(),
     )?;
     stderr().flush()?;
     Ok(removal.outcome)
@@ -2463,7 +2433,7 @@ mod tests {
     #[test]
     fn build_remove_command_with_tail_appends_only_when_present() {
         let path = Path::new("/tmp/wt");
-        let bare = build_remove_command_with_tail(path, false, false, None, None);
+        let bare = build_remove_command_with_tail(path, false, false, None);
         // No tail → the command is exactly the bare worktree removal.
         assert!(!bare.contains("&&"));
         let tailed = build_remove_command_with_tail(
@@ -2471,7 +2441,6 @@ mod tests {
             false,
             false,
             Some("git update-ref -d refs/heads/x deadbeef"),
-            None,
         );
         // A tail is chained with `&&` so it runs only after a successful removal.
         assert_eq!(

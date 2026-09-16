@@ -91,7 +91,7 @@ pub(super) struct PipelineSpec {
     pub hook_type: HookType,
     pub source: HookSource,
     #[serde(default)]
-    pub removal_completion_marker: Option<PathBuf>,
+    pub removal_git_dir: Option<PathBuf>,
     pub steps: Vec<PreparedStep>,
 }
 
@@ -113,8 +113,8 @@ pub fn run_pipeline() -> anyhow::Result<()> {
     let spec: PipelineSpec =
         serde_json::from_str(&contents).context("failed to deserialize pipeline spec")?;
 
-    if let Some(marker) = spec.removal_completion_marker.as_deref() {
-        wait_for_removal_completion(marker)?;
+    if let Some(git_dir) = spec.removal_git_dir.as_deref() {
+        wait_for_worktree_removal(git_dir)?;
     }
 
     let repo =
@@ -156,22 +156,21 @@ pub fn run_pipeline() -> anyhow::Result<()> {
 
 /// Wait until a detached legacy removal has physically removed its worktree.
 ///
-/// The foreground creates a unique marker before spawning the fallback, and
-/// the fallback removes it immediately after `git worktree remove` succeeds.
-/// Unlike polling the worktree path, this remains correct if another process
-/// creates a new directory or worktree at the same path before the hook starts.
-/// A bounded wait prevents a failed detached removal from leaving hook runners
-/// around indefinitely.
-fn wait_for_removal_completion(marker: &Path) -> anyhow::Result<()> {
+/// A successful `git worktree remove` deletes the target worktree's Git
+/// directory. Watching that existing lifecycle artifact avoids persistent
+/// completion markers while remaining independent of reuse of the old
+/// filesystem path. A bounded wait prevents a failed detached removal from
+/// leaving hook runners around indefinitely.
+fn wait_for_worktree_removal(git_dir: &Path) -> anyhow::Result<()> {
     let started = Instant::now();
     loop {
-        match fs::symlink_metadata(marker) {
+        match fs::symlink_metadata(git_dir) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
-                        "failed to inspect deferred removal marker: {}",
-                        marker.display()
+                        "failed to inspect deferred worktree git directory: {}",
+                        git_dir.display()
                     )
                 });
             }
@@ -180,8 +179,8 @@ fn wait_for_removal_completion(marker: &Path) -> anyhow::Result<()> {
             }
             Ok(_) => {
                 anyhow::bail!(
-                    "timed out waiting for deferred removal marker: {}",
-                    marker.display()
+                    "timed out waiting for deferred worktree git directory: {}",
+                    git_dir.display()
                 );
             }
         }
@@ -467,20 +466,20 @@ mod tests {
     }
 
     #[test]
-    fn removal_completion_does_not_depend_on_the_old_path() {
+    fn removal_completion_tracks_git_dir_not_reused_worktree_path() {
         let temp = tempfile::tempdir().unwrap();
-        let marker = temp.path().join("pending");
+        let git_dir = temp.path().join("worktrees/feature");
         let reused_path = temp.path().join("reused-worktree");
-        fs::write(&marker, "").unwrap();
+        fs::create_dir_all(&git_dir).unwrap();
         fs::create_dir(&reused_path).unwrap();
 
-        let marker_to_remove = marker.clone();
+        let git_dir_to_remove = git_dir.clone();
         let remover = std::thread::spawn(move || {
             std::thread::sleep(REMOVAL_WAIT_INTERVAL);
-            fs::remove_file(marker_to_remove).unwrap();
+            fs::remove_dir_all(git_dir_to_remove).unwrap();
         });
 
-        wait_for_removal_completion(&marker).unwrap();
+        wait_for_worktree_removal(&git_dir).unwrap();
         remover.join().unwrap();
         assert!(
             reused_path.exists(),
@@ -489,17 +488,17 @@ mod tests {
     }
 
     #[test]
-    fn removal_completion_reports_marker_inspection_errors() {
+    fn removal_completion_reports_git_dir_inspection_errors() {
         let temp = tempfile::tempdir().unwrap();
         let non_directory = temp.path().join("not-a-directory");
         fs::write(&non_directory, "").unwrap();
-        let marker = non_directory.join("pending");
+        let git_dir = non_directory.join("worktrees/feature");
 
-        let error = wait_for_removal_completion(&marker).unwrap_err();
+        let error = wait_for_worktree_removal(&git_dir).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("failed to inspect deferred removal marker"),
+                .contains("failed to inspect deferred worktree git directory"),
             "unexpected error: {error:#}"
         );
     }

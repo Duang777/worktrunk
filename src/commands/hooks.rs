@@ -298,7 +298,7 @@ struct PendingPipeline {
     branch: Option<String>,
     hook_type: HookType,
     display_path: Option<PathBuf>,
-    removal_completion_marker: Option<PathBuf>,
+    removal_git_dir: Option<PathBuf>,
     steps: Vec<SourcedStep>,
 }
 
@@ -336,7 +336,7 @@ impl<'a> HookAnnouncer<'a> {
                 branch: ctx.branch.map(String::from),
                 hook_type,
                 display_path: display_path.map(Path::to_path_buf),
-                removal_completion_marker: None,
+                removal_git_dir: None,
                 steps,
             });
         }
@@ -348,15 +348,20 @@ impl<'a> HookAnnouncer<'a> {
         self.pending.len()
     }
 
-    /// Delay pipelines registered since `checkpoint` until `marker` is gone.
+    /// Delay pipelines registered since `checkpoint` until `git_dir` is gone.
     ///
-    /// The legacy removal fallback deletes its unique marker immediately after
-    /// physical deletion completes. Scoping by checkpoint leaves earlier phases
-    /// in a combined announcer (such as merge's post-commit pipeline) untouched.
-    pub(crate) fn wait_for_removal_completion_since(&mut self, checkpoint: usize, marker: &Path) {
+    /// The legacy removal fallback removes the target worktree's Git directory
+    /// when physical deletion completes. Scoping by checkpoint leaves earlier
+    /// phases in a combined announcer (such as merge's post-commit pipeline)
+    /// untouched.
+    pub(crate) fn wait_for_worktree_git_dir_removal_since(
+        &mut self,
+        checkpoint: usize,
+        git_dir: &Path,
+    ) {
         debug_assert!(checkpoint <= self.pending.len());
         for pipeline in &mut self.pending[checkpoint..] {
-            pipeline.removal_completion_marker = Some(marker.to_path_buf());
+            pipeline.removal_git_dir = Some(git_dir.to_path_buf());
         }
     }
 
@@ -634,7 +639,7 @@ fn spawn_hook_pipeline_quiet(repo: &Repository, pipeline: PendingPipeline) -> an
         branch,
         hook_type,
         source,
-        removal_completion_marker: pipeline.removal_completion_marker,
+        removal_git_dir: pipeline.removal_git_dir,
         steps: pipeline.steps.into_iter().map(|step| step.step).collect(),
     };
 
