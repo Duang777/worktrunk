@@ -3794,6 +3794,33 @@ exec {real_git} "$@"
     fs::set_permissions(wrapper, permissions).unwrap();
 }
 
+#[cfg(unix)]
+fn write_deregistering_failure_git_wrapper(bin_dir: &Path, real_git: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let real_git = shell_escape::unix::escape(real_git.to_slash_lossy());
+    let script = format!(
+        r#"#!/bin/sh
+if [ "$1" = worktree ] && [ "$2" = remove ]; then
+    {real_git} "$@"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        mkdir -p -- "$WT_TEST_RECREATE_PATH"
+        printf leftover > "$WT_TEST_RECREATE_PATH/leftover"
+    fi
+    printf attempted > "$WT_TEST_REMOVE_ATTEMPTED"
+    exit 1
+fi
+exec {real_git} "$@"
+"#
+    );
+    let wrapper = bin_dir.join("git");
+    fs::write(&wrapper, script).unwrap();
+    let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(wrapper, permissions).unwrap();
+}
+
 /// A failed detached fallback must not leave repository-owned completion state.
 #[cfg(unix)]
 #[rstest]
@@ -3834,6 +3861,70 @@ fn test_remove_failed_background_fallback_leaves_no_completion_artifact(mut repo
     );
 
     let _ = std::fs::remove_file(&staged_path);
+}
+
+/// Deregistration alone is not successful removal: Git can delete the linked
+/// worktree's metadata and still fail to delete its directory.
+#[cfg(unix)]
+#[rstest]
+fn test_remove_failed_background_fallback_does_not_run_post_remove(mut repo: TestRepo) {
+    let worktree_path = repo.add_worktree("feature-failed-after-deregister");
+    let staged_path = block_staged_rename(&repo, &worktree_path);
+    let wrapper_dir = tempfile::tempdir().unwrap();
+    write_deregistering_failure_git_wrapper(wrapper_dir.path(), &which::which("git").unwrap());
+    let mut paths: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    paths.insert(0, wrapper_dir.path().to_path_buf());
+    let attempted = repo.root_path().join("remove-attempted-after-deregister");
+    let post_remove_marker = repo.root_path().join("post-remove-after-failure");
+    let post_remove = shell_escape::unix::escape(post_remove_marker.to_slash_lossy());
+    repo.write_test_config(&format!(
+        r#"[post-remove]
+record = "printf ran > {post_remove}"
+"#
+    ));
+
+    let output = repo
+        .wt_command()
+        .args([
+            "remove",
+            "feature-failed-after-deregister",
+            "--no-delete-branch",
+            "--yes",
+        ])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("WT_TEST_REMOVE_ATTEMPTED", &attempted)
+        .env("WT_TEST_RECREATE_PATH", &worktree_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the foreground command should successfully start the detached fallback: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    crate::common::wait_for_file_content(&attempted);
+    assert!(
+        worktree_path.join("leftover").exists(),
+        "the wrapper must leave a directory behind after deregistration"
+    );
+    std::thread::sleep(SLEEP_FOR_ABSENCE_CHECK);
+    assert!(
+        !post_remove_marker.exists(),
+        "post-remove must not run when the detached removal reports failure"
+    );
+
+    let completion_markers =
+        crate::common::resolve_git_common_dir(repo.root_path()).join("wt/removal-markers");
+    if let Ok(entries) = fs::read_dir(completion_markers) {
+        for entry in entries.flatten() {
+            let _ = fs::remove_file(entry.path());
+        }
+        crate::common::wait_for_file_content(&post_remove_marker);
+    }
+    let _ = fs::remove_dir_all(&worktree_path);
+    let _ = fs::remove_file(&staged_path);
 }
 
 /// `post-switch` runs at the destination immediately, while `post-remove`
@@ -3899,8 +3990,8 @@ order = "if test -e {worktree}; then printf present; else printf absent; fi > {p
     let completion_markers =
         crate::common::resolve_git_common_dir(repo.root_path()).join("wt/removal-markers");
     assert!(
-        !completion_markers.exists(),
-        "fallback removal must not create completion markers"
+        fs::read_dir(completion_markers).unwrap().next().is_none(),
+        "successful fallback removal must consume its completion marker"
     );
 
     crate::common::wait_for("recreated path removed", || !worktree_path.exists());

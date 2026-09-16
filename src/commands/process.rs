@@ -493,7 +493,9 @@ fn spawn_detached_exec_windows(
 ///
 /// 1. [`sweep_stale_trash`] — delete stale `.git/wt/trash/` entries left by
 ///    an interrupted background removal.
-/// 2. [`worktrunk::git::fsmonitor::reap_orphan_fsmonitor_daemons`] — terminate
+/// 2. [`sweep_stale_removal_markers`] — delete success-gate markers left by
+///    failed or interrupted legacy fallback removals after all waiters expire.
+/// 3. [`worktrunk::git::fsmonitor::reap_orphan_fsmonitor_daemons`] — terminate
 ///    `git fsmonitor--daemon` processes whose worktree no longer exists.
 ///    Defense-in-depth for daemons orphaned by paths that bypass `wt remove`
 ///    (plain `git worktree remove`, manual `rm -rf`, a crashed `wt`); the
@@ -501,11 +503,16 @@ fn spawn_detached_exec_windows(
 pub fn run_internal_sweep(repo: &Repository) {
     let _span = worktrunk::trace::Span::new("internal-sweep");
     sweep_stale_trash(repo);
+    sweep_stale_removal_markers(repo);
     worktrunk::git::fsmonitor::reap_orphan_fsmonitor_daemons(repo);
 }
 
 /// How old a `.git/wt/trash/` entry must be before [`sweep_stale_trash`] deletes it.
 pub const TRASH_STALE_THRESHOLD_SECS: u64 = 24 * 60 * 60;
+/// Prefix for success-gated deferred-removal markers.
+pub(crate) const REMOVAL_MARKER_PREFIX: &str = "pending-";
+/// Marker cleanup waits well beyond the five-minute hook-runner timeout.
+const REMOVAL_MARKER_STALE_THRESHOLD_SECS: u64 = 24 * 60 * 60;
 
 /// Fire-and-forget cleanup of stale entries in `.git/wt/trash/`.
 ///
@@ -542,6 +549,61 @@ pub fn sweep_stale_trash(repo: &Repository) {
     ) {
         tracing::debug!(error = %e, "Failed to spawn stale trash sweep: {e}");
     }
+}
+
+/// Remove deferred-removal markers whose waiting hook runners have timed out.
+///
+/// A marker is removed immediately after `git worktree remove` succeeds. If
+/// that detached command fails or the process is interrupted, the marker stays
+/// so `post-remove` hooks do not run against a worktree that may still exist.
+/// A later removal sweeps markers older than a day, well after every bounded
+/// five-minute waiter has exited.
+fn sweep_stale_removal_markers(repo: &Repository) {
+    let marker_dir = repo.wt_dir().join("removal-markers");
+    let stale = collect_stale_removal_markers(
+        &marker_dir,
+        epoch_now(),
+        REMOVAL_MARKER_STALE_THRESHOLD_SECS,
+    );
+    for marker in stale {
+        if let Err(error) = fs::remove_file(&marker) {
+            tracing::debug!(
+                path = %marker.display(),
+                error = %error,
+                "Failed to remove stale deferred-removal marker"
+            );
+        }
+    }
+    let _ = fs::remove_dir(marker_dir);
+}
+
+fn collect_stale_removal_markers(marker_dir: &Path, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
+    let Ok(read_dir) = fs::read_dir(marker_dir) else {
+        return Vec::new();
+    };
+
+    read_dir
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_file() && !file_type.is_symlink() {
+                return None;
+            }
+            let name = entry.file_name();
+            let timestamp = parse_removal_marker_timestamp(name.to_str()?)?;
+            let age = now.saturating_sub(timestamp);
+            (age >= threshold_secs).then(|| entry.path())
+        })
+        .collect()
+}
+
+fn parse_removal_marker_timestamp(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix(REMOVAL_MARKER_PREFIX)?;
+    let (timestamp, random_suffix) = rest.split_once('-')?;
+    if random_suffix.is_empty() {
+        return None;
+    }
+    timestamp.parse().ok()
 }
 
 /// Build the `rm -rf -- …` command that [`sweep_stale_trash`] hands to
@@ -737,6 +799,9 @@ pub fn build_remove_command_staged(
 /// `force_worktree` adds `--force` to `git worktree remove`, allowing removal
 /// even when the worktree contains untracked files (like build artifacts).
 ///
+/// When `completion_marker` is set, the command removes it immediately after
+/// the worktree removal succeeds and before any branch-deletion tail runs.
+///
 /// When `changed_directory` is true, a 1-second delay runs first so the shell
 /// wrapper can cd away before the directory is removed. When false (removing a
 /// non-current worktree), the removal runs immediately.
@@ -745,6 +810,7 @@ pub fn build_remove_command(
     branch_to_delete: Option<&str>,
     force_worktree: bool,
     changed_directory: bool,
+    completion_marker: Option<&std::path::Path>,
 ) -> String {
     use shell_escape::unix::escape;
 
@@ -768,19 +834,25 @@ pub fn build_remove_command(
     } else {
         String::new()
     };
+    let completion = completion_marker
+        .map(|path| {
+            let path = path.to_string_lossy();
+            format!(" && rm -f -- {}", escape(path.as_ref().into()))
+        })
+        .unwrap_or_default();
 
     match branch_to_delete {
         Some(branch_name) => {
             let branch_escaped = escape(branch_name.into());
             format!(
-                "{}git worktree remove{} {} && git branch -D {}",
-                prefix, force_flag, worktree_escaped, branch_escaped
+                "{}git worktree remove{} {}{} && git branch -D {}",
+                prefix, force_flag, worktree_escaped, completion, branch_escaped
             )
         }
         None => {
             format!(
-                "{}git worktree remove{} {}",
-                prefix, force_flag, worktree_escaped
+                "{}git worktree remove{} {}{}",
+                prefix, force_flag, worktree_escaped, completion
             )
         }
     }
@@ -876,21 +948,27 @@ mod tests {
         use std::path::PathBuf;
 
         let path = PathBuf::from("/tmp/test-worktree");
-
         // changed_directory=true: sleep before removal
-        assert_snapshot!(build_remove_command(&path, None, false, true), @"sleep 1 && git worktree remove /tmp/test-worktree");
-        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, true), @"sleep 1 && git worktree remove /tmp/test-worktree && git branch -D feature-branch");
+        assert_snapshot!(build_remove_command(&path, None, false, true, None), @"sleep 1 && git worktree remove /tmp/test-worktree");
+        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, true, None), @"sleep 1 && git worktree remove /tmp/test-worktree && git branch -D feature-branch");
 
         // changed_directory=false: no sleep
-        assert_snapshot!(build_remove_command(&path, None, false, false), @"git worktree remove /tmp/test-worktree");
-        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, false), @"git worktree remove /tmp/test-worktree && git branch -D feature-branch");
+        assert_snapshot!(build_remove_command(&path, None, false, false, None), @"git worktree remove /tmp/test-worktree");
+        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, false, None), @"git worktree remove /tmp/test-worktree && git branch -D feature-branch");
 
         // With force flag
-        assert_snapshot!(build_remove_command(&path, None, true, true), @"sleep 1 && git worktree remove --force /tmp/test-worktree");
+        assert_snapshot!(build_remove_command(&path, None, true, true, None), @"sleep 1 && git worktree remove --force /tmp/test-worktree");
 
         // Shell escaping for special characters
         let special_path = PathBuf::from("/tmp/test worktree");
-        assert_snapshot!(build_remove_command(&special_path, Some("feature/branch"), false, true), @"sleep 1 && git worktree remove '/tmp/test worktree' && git branch -D feature/branch");
+        assert_snapshot!(build_remove_command(&special_path, Some("feature/branch"), false, true, None), @"sleep 1 && git worktree remove '/tmp/test worktree' && git branch -D feature/branch");
+
+        // Completion is signaled immediately after successful worktree removal.
+        let marker = PathBuf::from("/tmp/repo/.git/wt/removal-markers/pending-1-abc");
+        assert_snapshot!(
+            build_remove_command(&path, Some("feature-branch"), false, false, Some(&marker)),
+            @"git worktree remove /tmp/test-worktree && rm -f -- /tmp/repo/.git/wt/removal-markers/pending-1-abc && git branch -D feature-branch"
+        );
     }
 
     #[test]
@@ -1037,6 +1115,34 @@ mod tests {
         assert_eq!(parse_trash_entry_timestamp("no-timestamp"), None);
         assert_eq!(parse_trash_entry_timestamp("notimestamp"), None);
         assert_eq!(parse_trash_entry_timestamp(""), None);
+    }
+
+    #[test]
+    fn test_collect_stale_removal_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker_dir = temp.path();
+        let stale = marker_dir.join("pending-100-old");
+        let fresh = marker_dir.join("pending-190-fresh");
+        let malformed = marker_dir.join("pending-not-a-time-random");
+        let directory = marker_dir.join("pending-100-directory");
+        fs::write(&stale, "").unwrap();
+        fs::write(&fresh, "").unwrap();
+        fs::write(&malformed, "").unwrap();
+        fs::create_dir(&directory).unwrap();
+
+        assert_eq!(
+            collect_stale_removal_markers(marker_dir, 200, 50),
+            vec![stale]
+        );
+        assert_eq!(
+            parse_removal_marker_timestamp("pending-1700000000-random"),
+            Some(1700000000)
+        );
+        assert_eq!(parse_removal_marker_timestamp("pending-1700000000-"), None);
+        assert_eq!(
+            parse_removal_marker_timestamp("other-1700000000-random"),
+            None
+        );
     }
 
     #[test]
