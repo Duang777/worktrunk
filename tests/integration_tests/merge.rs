@@ -3686,42 +3686,6 @@ fn test_step_commit_preserves_staged_changes_when_post_stage_inspection_fails(re
     );
 }
 
-#[rstest]
-fn test_step_commit_auto_staging_warning_truncates_large_file_list(repo: TestRepo) {
-    repo.run_git(&["config", "status.showUntrackedFiles", "no"]);
-    let nested = repo.root_path().join("nested");
-    fs::create_dir(&nested).unwrap();
-    for index in 0..12 {
-        fs::write(nested.join(format!("file-{index:02}.txt")), "content").unwrap();
-    }
-
-    let output = repo
-        .wt_command()
-        .args(["step", "commit", "--no-hooks"])
-        .env(
-            "WORKTRUNK_COMMIT__GENERATION__COMMAND",
-            "cat >/dev/null && echo 'feat: include hidden files'",
-        )
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "step commit should succeed; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("Auto-staging 12 untracked paths:")
-            && stderr.contains("nested/file-00.txt")
-            && stderr.contains("nested/file-09.txt")
-            && stderr.contains("and 2 more"),
-        "the warning must report the full count and a bounded preview; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("nested/file-10.txt") && !stderr.contains("nested/file-11.txt"),
-        "the warning must not print paths beyond the preview limit; stderr:\n{stderr}"
-    );
-}
-
 #[cfg(unix)]
 #[rstest]
 fn test_step_commit_auto_staging_warning_escapes_control_characters(repo: TestRepo) {

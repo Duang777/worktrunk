@@ -3917,12 +3917,19 @@ record = "printf ran > {post_remove}"
 
     let completion_markers =
         crate::common::resolve_git_common_dir(repo.root_path()).join("wt/removal-markers");
-    if let Ok(entries) = fs::read_dir(completion_markers) {
-        for entry in entries.flatten() {
-            let _ = fs::remove_file(entry.path());
-        }
-        crate::common::wait_for_file_content(&post_remove_marker);
+    let entries: Vec<PathBuf> = fs::read_dir(completion_markers)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "the blocked post-remove pipeline must still be holding a marker"
+    );
+    for entry in entries {
+        fs::remove_file(entry).unwrap();
     }
+    crate::common::wait_for_file_content(&post_remove_marker);
     let _ = fs::remove_dir_all(&worktree_path);
     let _ = fs::remove_file(&staged_path);
 }

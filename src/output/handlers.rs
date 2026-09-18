@@ -15,8 +15,8 @@ use crate::commands::command_executor::FailureStrategy;
 use crate::commands::hook_plan::{ApprovedHookPlan, execute_planned_hook, register_planned};
 use crate::commands::hooks::HookAnnouncer;
 use crate::commands::process::{
-    HookLog, InternalOp, REMOVAL_MARKER_PREFIX, build_remove_command, build_remove_command_staged,
-    spawn_detached,
+    HookLog, InternalOp, REMOVAL_MARKER_DIR, REMOVAL_MARKER_PREFIX, build_remove_command,
+    build_remove_command_staged, spawn_detached,
 };
 use crate::commands::template_vars::TemplateVars;
 use crate::commands::worktree::hooks::PostRemoveContext;
@@ -148,7 +148,7 @@ struct BackgroundRemovalResult {
 }
 
 fn create_removal_completion_marker(repo: &Repository) -> anyhow::Result<PathBuf> {
-    let marker_dir = repo.wt_dir().join("removal-markers");
+    let marker_dir = repo.wt_dir().join(REMOVAL_MARKER_DIR);
     fs::create_dir_all(&marker_dir)?;
     let prefix = format!("{REMOVAL_MARKER_PREFIX}{}-", epoch_now());
     let marker = tempfile::Builder::new()

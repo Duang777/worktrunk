@@ -392,7 +392,7 @@ command = "cat > {} && echo 'chore: auto-commit before relocate'"
 }
 
 /// `--commit` uses `git add -A`, so the warning must override Git's display
-/// preference just like the dirty check does.
+/// preference and collapse a wholly untracked directory to one path.
 #[rstest]
 fn test_relocate_commit_warns_about_untracked_files_hidden_by_user_config(repo: TestRepo) {
     let parent = worktree_parent(&repo);
@@ -436,10 +436,8 @@ fn test_relocate_commit_warns_about_untracked_files_hidden_by_user_config(repo: 
         "relocate should succeed; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("Auto-staging 2 untracked paths:")
-            && stderr.contains("nested/first.txt")
-            && stderr.contains("nested/second.txt"),
-        "relocate must disclose every hidden file it auto-stages; stderr:\n{stderr}"
+        stderr.contains("Auto-staging 1 untracked path:") && stderr.contains("nested/"),
+        "relocate must disclose the hidden directory it auto-stages; stderr:\n{stderr}"
     );
 
     let expected_path = parent.join("repo.feature");

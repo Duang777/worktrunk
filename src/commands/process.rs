@@ -509,6 +509,8 @@ pub fn run_internal_sweep(repo: &Repository) {
 
 /// How old a `.git/wt/trash/` entry must be before [`sweep_stale_trash`] deletes it.
 pub const TRASH_STALE_THRESHOLD_SECS: u64 = 24 * 60 * 60;
+/// Directory containing success-gated deferred-removal markers.
+pub(crate) const REMOVAL_MARKER_DIR: &str = "removal-markers";
 /// Prefix for success-gated deferred-removal markers.
 pub(crate) const REMOVAL_MARKER_PREFIX: &str = "pending-";
 /// Marker cleanup waits well beyond the five-minute hook-runner timeout.
@@ -559,7 +561,7 @@ pub fn sweep_stale_trash(repo: &Repository) {
 /// A later removal sweeps markers older than a day, well after every bounded
 /// five-minute waiter has exited.
 fn sweep_stale_removal_markers(repo: &Repository) {
-    let marker_dir = repo.wt_dir().join("removal-markers");
+    let marker_dir = repo.wt_dir().join(REMOVAL_MARKER_DIR);
     let stale = collect_stale_removal_markers(
         &marker_dir,
         epoch_now(),
@@ -574,7 +576,6 @@ fn sweep_stale_removal_markers(repo: &Repository) {
             );
         }
     }
-    let _ = fs::remove_dir(marker_dir);
 }
 
 fn collect_stale_removal_markers(marker_dir: &Path, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
@@ -862,6 +863,7 @@ pub fn build_remove_command(
 mod tests {
     use insta::assert_snapshot;
     use path_slash::PathExt as _;
+    use worktrunk::testing::TestRepo;
 
     use super::*;
 
@@ -1142,6 +1144,24 @@ mod tests {
         assert_eq!(
             parse_removal_marker_timestamp("other-1700000000-random"),
             None
+        );
+    }
+
+    #[test]
+    fn test_stale_removal_marker_sweep_keeps_shared_directory() {
+        let test = TestRepo::with_initial_commit();
+        let repo = Repository::at(test.root_path()).unwrap();
+        let marker_dir = repo.wt_dir().join(REMOVAL_MARKER_DIR);
+        let stale = marker_dir.join(format!("{REMOVAL_MARKER_PREFIX}0-old"));
+        fs::create_dir_all(&marker_dir).unwrap();
+        fs::write(&stale, "").unwrap();
+
+        sweep_stale_removal_markers(&repo);
+
+        assert!(!stale.exists(), "the stale marker must be removed");
+        assert!(
+            marker_dir.is_dir(),
+            "the shared marker directory must remain available to concurrent removals"
         );
     }
 

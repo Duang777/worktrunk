@@ -7,35 +7,37 @@ use worktrunk::config::CommitGenerationConfig;
 use worktrunk::git::{CommandError, WorkingTree};
 use worktrunk::styling::{
     eprintln, format_with_gutter, hint_message, info_message, progress_message, success_message,
-    warning_message,
 };
-use worktrunk::utils::escape_filename_for_terminal;
 
 use super::command_executor::CommandContext;
 use super::command_executor::FailureStrategy;
 use super::hooks::{HookAnnouncer, execute_hook};
+use super::repository_ext::{warn_about_untracked_files, warn_about_untracked_paths};
 use super::template_vars::TemplateVars;
 
 // Re-export StageMode from config for use by CLI
 pub use worktrunk::config::StageMode;
 
-/// Stage changes, then disclose every newly added index path before commit.
+/// Warn about current untracked paths, stage changes, then disclose any path
+/// that became untracked during the staging window.
 pub(crate) fn stage_with_untracked_warning(
     worktree: &WorkingTree<'_>,
     stage_mode: StageMode,
 ) -> anyhow::Result<()> {
     if stage_mode == StageMode::All {
+        let disclosed_untracked = warn_about_untracked_files(worktree)?;
         let previously_staged = staged_added_paths(worktree)?
             .into_iter()
             .collect::<HashSet<_>>();
         let stage_result = worktree.stage(stage_mode);
         match staged_added_paths(worktree) {
             Ok(staged_after) => {
-                let auto_staged = staged_after
+                let late_auto_staged = staged_after
                     .into_iter()
                     .filter(|path| !previously_staged.contains(path))
+                    .filter(|path| !path_was_disclosed(path, &disclosed_untracked))
                     .collect::<Vec<_>>();
-                warn_about_untracked_files(&auto_staged)?;
+                warn_about_untracked_paths(&late_auto_staged);
             }
             Err(_) if stage_result.is_err() => return stage_result,
             Err(error) => return Err(error),
@@ -43,6 +45,12 @@ pub(crate) fn stage_with_untracked_warning(
         return stage_result;
     }
     worktree.stage(stage_mode)
+}
+
+fn path_was_disclosed(path: &[u8], disclosed: &[Vec<u8>]) -> bool {
+    disclosed
+        .iter()
+        .any(|shown| path == shown || (shown.ends_with(b"/") && path.starts_with(shown)))
 }
 
 fn staged_added_paths(worktree: &WorkingTree<'_>) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -68,36 +76,6 @@ fn staged_added_paths(worktree: &WorkingTree<'_>) -> anyhow::Result<Vec<Vec<u8>>
         .filter(|path| !path.is_empty())
         .map(|path| path.to_vec())
         .collect())
-}
-
-/// Warn about untracked files that will be auto-staged.
-fn warn_about_untracked_files(files: &[Vec<u8>]) -> anyhow::Result<()> {
-    const MAX_SHOWN: usize = 10;
-
-    if files.is_empty() {
-        return Ok(());
-    }
-
-    let count = files.len();
-    let path_word = if count == 1 { "path" } else { "paths" };
-    eprintln!(
-        "{}",
-        warning_message(format!("Auto-staging {count} untracked {path_word}:"))
-    );
-
-    let mut shown = files
-        .iter()
-        .take(MAX_SHOWN)
-        .map(|path| escape_filename_for_terminal(path))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if count > MAX_SHOWN {
-        let remaining = count - MAX_SHOWN;
-        shown.push_str(&format!("\nand {remaining} more"));
-    }
-    eprintln!("{}", format_with_gutter(&shown, None));
-
-    Ok(())
 }
 
 /// Outcome of a successful commit operation. Returned so callers (e.g.
@@ -400,5 +378,14 @@ mod tests {
         let generator = CommitGenerator::new(&config, None);
         let result = generator.format_message_for_display("");
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn disclosed_directory_covers_its_staged_files() {
+        let disclosed = vec![b"generated/".to_vec(), b"single.txt".to_vec()];
+
+        assert!(path_was_disclosed(b"generated/nested/file.txt", &disclosed));
+        assert!(path_was_disclosed(b"single.txt", &disclosed));
+        assert!(!path_was_disclosed(b"generated-other/file.txt", &disclosed));
     }
 }

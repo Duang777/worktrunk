@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::worktree::{RemovalPlan, SharedBranchCheckout};
-use anyhow::bail;
+use anyhow::{Context, bail};
 use color_print::cformat;
 use worktrunk::git::{
     BranchDeletionMode, GitError, IntegrationReason, RefSnapshot, Repository, WorkingTree,
@@ -11,6 +11,7 @@ use worktrunk::path::format_path_for_display;
 use worktrunk::styling::{
     eprintln, format_with_gutter, hint_message, suggest_command, warning_message,
 };
+use worktrunk::utils::escape_filename_for_terminal;
 
 /// Target for worktree removal.
 #[derive(Debug)]
@@ -618,15 +619,28 @@ pub(crate) fn check_not_default_branch(
 ///
 /// The listing has at most `MAX_ROWS` rows. Past that many paths, the last row
 /// is a hint counting the rest, which is always at least two paths.
-pub(crate) fn warn_about_untracked_files(wt: &WorkingTree) -> anyhow::Result<()> {
+///
+/// Returns the paths represented by the warning so the staging path can avoid
+/// reporting them again when it checks for files created during staging.
+pub(crate) fn warn_about_untracked_files(wt: &WorkingTree) -> anyhow::Result<Vec<Vec<u8>>> {
+    let args = ["status", "--porcelain", "-z", "-unormal"];
+    let output = wt
+        .run_command_output(&args)
+        .context("Failed to get status")?;
+    if !output.status.success() {
+        return Err(worktrunk::git::CommandError::from_failed_output("git", &args, &output).into());
+    }
+    let files = parse_untracked_files(&output.stdout);
+    warn_about_untracked_paths(&files);
+    Ok(files)
+}
+
+/// Render the bounded auto-staging warning for raw Git path bytes.
+pub(crate) fn warn_about_untracked_paths(files: &[Vec<u8>]) {
     const MAX_ROWS: usize = 10;
 
-    let status = wt
-        .run_command(&["status", "--porcelain", "-z", "-unormal"])
-        .context("Failed to get status")?;
-    let files = parse_untracked_files(&status);
     if files.is_empty() {
-        return Ok(());
+        return;
     }
 
     let count = files.len();
@@ -641,13 +655,16 @@ pub(crate) fn warn_about_untracked_files(wt: &WorkingTree) -> anyhow::Result<()>
     } else {
         count
     };
-    eprintln!("{}", format_with_gutter(&files[..listed].join("\n"), None));
+    let listed_paths = files[..listed]
+        .iter()
+        .map(|path| escape_filename_for_terminal(path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    eprintln!("{}", format_with_gutter(&listed_paths, None));
     if listed < count {
         let omitted = count - listed;
         eprintln!("{}", hint_message(format!("… and {omitted} other paths")));
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
