@@ -151,7 +151,7 @@ fn test_doc_sanitize_db_filter(repo: TestRepo) {
     let repository = Repository::at(repo.root_path()).unwrap();
 
     // From docs: {{ branch | sanitize_db }} transforms to database-safe identifier
-    // Output includes a 3-character hash suffix for uniqueness
+    // Output includes a 5-character hash suffix to reduce collisions
     vars.insert("branch", "feature/auth-oauth2");
     let result = expand_template(
         "{{ branch | sanitize_db }}",

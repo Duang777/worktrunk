@@ -265,8 +265,8 @@ pub fn paths_match(a: &Path, b: &Path) -> bool {
 /// Windows reserved names (CON, PRN, etc.), and trailing dots/spaces.
 ///
 /// If the input is already a safe filename, it is returned unchanged. Otherwise
-/// a 3-character hash suffix (computed from the original input) is appended so
-/// that inputs which would otherwise collide produce distinct outputs (e.g.,
+/// a 5-character hash suffix (computed from the original input) is appended to
+/// reduce collisions between inputs that normalize identically (e.g.,
 /// `origin/feature` → `origin-feature-<hash>` does not collide with the
 /// already-safe `origin-feature`).
 pub fn sanitize_for_filename(value: &str) -> String {
@@ -530,14 +530,24 @@ mod tests {
     #[test]
     fn test_sanitize_for_filename_avoids_collisions() {
         // Already-safe names pass through unchanged; only sanitized inputs get
-        // a hash suffix. This still avoids collisions because the suffix makes
-        // the sanitized form distinct from any plausible already-safe name.
+        // a hash suffix, keeping the sanitized form distinct from the safe name.
         let a = sanitize_for_filename("origin/feature");
         let b = sanitize_for_filename("origin-feature");
 
         assert_ne!(a, b, "collision: {a} == {b}");
         assert!(a.starts_with("origin-feature-"));
         assert_eq!(b, "origin-feature");
+
+        // These two unsafe paths normalize to the same base and shared the
+        // same 3-character suffix before the width was raised.
+        assert_eq!(
+            sanitize_for_filename("a/b/c-d/e/f/g-h/i/j/k/l/m/n/o/p/q"),
+            "a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q-9qqil"
+        );
+        assert_eq!(
+            sanitize_for_filename("a-b-c/d-e-f/g/h-i/j/k/l/m/n/o/p/q"),
+            "a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q-ftn0u"
+        );
     }
 
     #[test]

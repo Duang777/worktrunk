@@ -68,7 +68,7 @@ fn test_expand_template_sanitize_hash_filter() {
     .unwrap();
     assert_eq!(result, "server");
 
-    // Unsafe characters are replaced and a 3-char hash suffix is appended
+    // Unsafe characters are replaced and a 5-char hash suffix is appended
     let vars = vars_with_branch("feature/auth");
     let result = expand_template(
         "{{ branch | sanitize_hash }}",
@@ -79,7 +79,7 @@ fn test_expand_template_sanitize_hash_filter() {
     )
     .unwrap();
     assert!(result.starts_with("feature-auth-"), "got: {result}");
-    assert_eq!(result.len(), "feature-auth-".len() + 3, "got: {result}");
+    assert_eq!(result.len(), "feature-auth-".len() + 5, "got: {result}");
 
     // Empty input becomes "_empty-<hash>"
     let mut vars = HashMap::new();
@@ -93,7 +93,7 @@ fn test_expand_template_sanitize_hash_filter() {
     )
     .unwrap();
     assert!(result.starts_with("_empty-"), "got: {result}");
-    assert_eq!(result.len(), "_empty-".len() + 3, "got: {result}");
+    assert_eq!(result.len(), "_empty-".len() + 5, "got: {result}");
 }
 
 #[test]
