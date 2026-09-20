@@ -1033,12 +1033,20 @@ impl<'a> WorkingTree<'a> {
     /// Note: The index is per-worktree in git, so this checks this specific
     /// worktree's staging area.
     pub fn has_staged_changes(&self) -> anyhow::Result<bool> {
-        // Exit code 0 = no diff (no staged changes), exit code 1 = diff exists (has staged changes)
-        // run_command returns Ok on exit 0, Err on non-zero
-        // So: Err means has changes
-        Ok(self
-            .run_command(&["diff", "--cached", "--quiet", "--exit-code"])
-            .is_err())
+        let args = [
+            "diff",
+            "--cached",
+            "--no-relative",
+            "--quiet",
+            "--exit-code",
+            "--ignore-submodules=none",
+        ];
+        let output = self.run_command_output(&args)?;
+        match output.status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => Err(CommandError::from_failed_output("git", &args, &output).into()),
+        }
     }
 
     /// Check whether this worktree has initialized submodules.
@@ -1315,6 +1323,36 @@ mod tests {
         assert!(
             err.to_string().contains("Failed to read worktree lock"),
             "expected a lock-file IO error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn has_staged_changes_surfaces_git_errors() {
+        let test = TestRepo::with_initial_commit();
+        let repo = Repository::at(test.root_path()).unwrap();
+        let worktree = repo.current_worktree();
+        std::fs::write(worktree.git_dir().unwrap().join("index"), "not an index").unwrap();
+
+        let error = worktree.has_staged_changes().unwrap_err();
+        assert!(
+            error.to_string().contains("git diff"),
+            "expected the failed git command, got {error:#}"
+        );
+    }
+
+    #[test]
+    fn has_staged_changes_checks_whole_worktree_from_nested_discovery_path() {
+        let test = TestRepo::with_initial_commit();
+        let nested = test.root_path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(test.root_path().join("staged.txt"), "staged\n").unwrap();
+        test.run_git(&["add", "staged.txt"]);
+        test.run_git(&["config", "diff.relative", "true"]);
+
+        let repo = Repository::at(&nested).unwrap();
+        assert!(
+            repo.current_worktree().has_staged_changes().unwrap(),
+            "staged paths outside the discovery directory must remain visible"
         );
     }
 
