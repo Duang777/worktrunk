@@ -482,7 +482,7 @@ impl Repository {
     /// Every argument that names a worktree routes through here, so they all
     /// accept the same vocabulary: the shortcuts, a branch name, and the path
     /// of the worktree itself. wt addresses worktrees by branch (see the
-    /// "Worktree Model" section of `CLAUDE.md`), so the branch is tried first
+    /// "Worktree Model" section of `AGENTS.md`), so the branch is tried first
     /// and a path only answers what a branch name cannot — a detached worktree,
     /// or one of several checkouts of the same branch.
     ///

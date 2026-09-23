@@ -142,7 +142,7 @@ pub trait ErrorExt {
     /// per the shell convention (130 SIGINT, 143 SIGTERM) — rather than
     /// continuing.
     ///
-    /// See the "Signal Handling" section of the project `CLAUDE.md` for
+    /// See the "Signal Handling" section of the project `AGENTS.md` for
     /// the rationale and the full list of loops that apply this policy.
     fn interrupt_signal(&self) -> Option<i32>;
 }

@@ -404,7 +404,7 @@ impl Repository {
     /// call per repo may run `git ls-remote` (100 ms–2 s); the result is
     /// then persisted to `worktrunk.default-branch` and every subsequent
     /// call is a local cache hit. No other detection helper may add a
-    /// similar fallback. See `CLAUDE.md` → "Network Access" for the policy.
+    /// similar fallback. See `AGENTS.md` → "Network Access" for the policy.
     ///
     /// Detection strategy:
     /// 1. Check worktrunk cache (`git config worktrunk.default-branch`)

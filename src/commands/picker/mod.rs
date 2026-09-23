@@ -87,7 +87,7 @@
 //! RUST_LOG=debug ./target/release/wt -C <repo> switch \
 //!   2> >(cargo run -p wt-perf --release -q -- trace > trace.json)
 //! # Open trace.json in Perfetto, or run the phase-duration SQL query
-//! # documented in benches/CLAUDE.md §"What's on the critical path?".
+//! # documented in benches/AGENTS.md §"What's on the critical path?".
 //! ```
 
 mod items;
@@ -1315,7 +1315,7 @@ impl CommandCollector for PickerCollector {
 /// `post-remove` anchor). The picker can't prompt mid-render, so it runs the
 /// removal's hooks only when they're already approved (e.g. from a prior
 /// `wt remove` / `wt merge`) and skips them otherwise — unapproved project
-/// commands must never run. See CLAUDE.md → "Project Commands Run Only After
+/// commands must never run. See AGENTS.md → "Project Commands Run Only After
 /// Approval".
 fn approved_removal_plan(
     repo: &Repository,
@@ -1775,7 +1775,7 @@ pub fn handle_picker(
     // status (see `populate_from_cache`), then fetched live and streamed in — the
     // same 30–60s-TTL cache plus live fetch as `wt list --full`. The picker's
     // lifetime is bounded by the user, so a slow forge call never blocks anything
-    // (see the "Network Access" notes in CLAUDE.md). The `pr` preview tab reads
+    // (see the "Network Access" notes in AGENTS.md). The `pr` preview tab reads
     // the same live status. `--prs` rows carry their own number from the explicit
     // `--prs` forge call.
 

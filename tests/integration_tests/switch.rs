@@ -1492,7 +1492,7 @@ approved-commands = ["{}"]
 
     // post-start runs in the background; with --no-hooks it is never spawned,
     // but sleep briefly so a regression that incorrectly spawns it has time to
-    // create the marker (per tests/CLAUDE.md "Testing absence").
+    // create the marker (per tests/AGENTS.md "Testing absence").
     std::thread::sleep(SLEEP_FOR_ABSENCE_CHECK);
     let repo_name = repo.root_path().file_name().unwrap().to_str().unwrap();
     let worktree = repo
@@ -1550,7 +1550,7 @@ fn test_switch_no_config_commands_with_yes(repo: TestRepo) {
 
     // post-start runs in the background; with --no-hooks it is never spawned,
     // but sleep briefly so a regression that incorrectly spawns it has time to
-    // create the marker (per tests/CLAUDE.md "Testing absence").
+    // create the marker (per tests/AGENTS.md "Testing absence").
     std::thread::sleep(SLEEP_FOR_ABSENCE_CHECK);
     let repo_name = repo.root_path().file_name().unwrap().to_str().unwrap();
     let worktree = repo

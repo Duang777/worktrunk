@@ -44,7 +44,7 @@
 //!   `worktrunk.default-branch` nor `refs/remotes/<remote>/HEAD` is set.
 //!   100 ms – 2 s on the wire. The result persists to
 //!   `worktrunk.default-branch` so subsequent runs are a cache hit. This is
-//!   worktrunk's one accepted wire-path exception — see CLAUDE.md →
+//!   worktrunk's one accepted wire-path exception — see AGENTS.md →
 //!   "Network Access".
 //!
 //! ### #6 — the batched commit-details fork
@@ -188,7 +188,7 @@
 //! Reproduce end-to-end via
 //! `cargo bench --bench time_to_first_output -- list`; for a per-phase
 //! breakdown, capture a trace and run the phase-duration SQL query from
-//! `benches/CLAUDE.md`:
+//! `benches/AGENTS.md`:
 //!
 //! ```bash
 //! RUST_LOG=debug ./target/release/wt -C <repo> list --progressive \

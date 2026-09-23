@@ -29,7 +29,7 @@ runs:
     # PATH. The publish was the only route while the sandbox denied reads under
     # the runner's home (0.2.5–0.2.13) and is now a second copy of the same two
     # binaries; it stays as what keeps `.config/tend.yaml`'s probe green if
-    # that isolation returns (see "Sandbox toolchain" in .github/CLAUDE.md).
+    # that isolation returns (see "Sandbox toolchain" in .github/AGENTS.md).
     # Swapping these steps for an action with a different layout breaks the
     # publish step, which hardcodes this root; update both sides.
     - name: Install cargo-insta
@@ -87,7 +87,7 @@ runs:
     # `shell-integration-tests` — that needs `nu` as much as zsh and fish, and
     # two tests `.expect()` it outright. `setup-nu` installs into
     # /opt/hostedtoolcache, which the agent has reached under every sandbox
-    # arrangement so far (see "Sandbox toolchain" in .github/CLAUDE.md). Level
+    # arrangement so far (see "Sandbox toolchain" in .github/AGENTS.md). Level
     # with `test-setup`'s pin.
     - name: Install nushell
       if: inputs.install-shells == 'true'

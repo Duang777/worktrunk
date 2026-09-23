@@ -15,7 +15,7 @@ tasks:
 
   profile-tests:
     desc: Run the suite under CPU accounting and report where the time goes
-    # tests/CLAUDE.md → Profiling the Suite covers how to read the numbers.
+    # tests/AGENTS.md → Profiling the Suite covers how to read the numbers.
     cmds:
       # Build first so the measurement covers the test run alone.
       - cargo nextest run --no-run --features shell-integration-tests

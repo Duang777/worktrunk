@@ -487,7 +487,7 @@ fn spawn_detached_exec_windows(
 /// `git worktree list`, and a classified orphan a `SIGTERM`→`SIGKILL` wait
 /// bounded by `REAP_KILL_DEADLINE` — both flat in the daemon count too (see
 /// the `internal-sweep` / `enumerate-fsmonitor-daemons` trace spans and
-/// benches/CLAUDE.md § Recording `wt remove` / `wt step prune` staging).
+/// benches/AGENTS.md § Recording `wt remove` / `wt step prune` staging).
 ///
 /// Steps:
 ///

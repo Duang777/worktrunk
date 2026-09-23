@@ -4,7 +4,7 @@ setup:
 # tend 0.2.14 deprecated `sandbox_setup:` and runs its commands as an ordinary
 # `runner` step after `setup:`; the agent then sees what they install through a
 # copy-on-write view of the job's home (see "Sandbox toolchain" in
-# .github/CLAUDE.md). #4222 kept the key so a release reverting 0.2.14 would
+# .github/AGENTS.md). #4222 kept the key so a release reverting 0.2.14 would
 # still find it, so this block outliving its original rationale is deliberate,
 # not drift.
 #
@@ -22,7 +22,7 @@ setup:
 sandbox_setup:
 - mkdir -p ~/.local/bin
 - uv tool install --quiet pre-commit
-- 'for t in cargo-insta cargo-nextest pre-commit nu nix; do command -v "$t" >/dev/null || { echo "::error::tend sandbox is missing $t; see Sandbox toolchain in .github/CLAUDE.md"; exit 1; }; done'
+- 'for t in cargo-insta cargo-nextest pre-commit nu nix; do command -v "$t" >/dev/null || { echo "::error::tend sandbox is missing $t; see Sandbox toolchain in .github/AGENTS.md"; exit 1; }; done'
 secrets:
   allowed:
   - CODECOV_TOKEN

@@ -684,7 +684,7 @@ pub fn scrub_git_discovery_env_vars(cmd: &mut std::process::Command) {
 /// missing config file as empty), and `GIT_CONFIG_COUNT` with its numbered
 /// keys and values — git's environment spelling of `-c` — supplies the two
 /// settings the suite needs in the denied config's place. What each entry is
-/// for, and why `-c` precedence keeps this list short: `tests/CLAUDE.md` →
+/// for, and why `-c` precedence keeps this list short: `tests/AGENTS.md` →
 /// Git Config Isolation.
 pub const HERMETIC_TEST_GIT_ENV: [(&str, &str); 7] = [
     ("GIT_CONFIG_GLOBAL", "/nonexistent/wt/gitconfig"),

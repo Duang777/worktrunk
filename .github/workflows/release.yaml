@@ -122,7 +122,7 @@ jobs:
     # This job doesn't deploy anything; the environment scopes
     # SIGNPATH_API_TOKEN so it isn't readable by every workflow the repo runs.
     # It is deliberately not `release`, which also holds the publish
-    # credentials — see .github/CLAUDE.md. The policy admits tags only, so
+    # credentials — see .github/AGENTS.md. The policy admits tags only, so
     # setting `pr-run-mode = "upload"` in dist-workspace.toml would make GitHub
     # reject this job on a PR ref.
     environment: signing

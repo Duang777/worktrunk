@@ -13,7 +13,7 @@
 // Attribution: a `full` wall time can't be split by side (worktree- and
 // branch-side git subprocesses overlap on the rayon pool), so to see where a
 // regression lands, trace one invocation and read the profile's BY CONTEXT /
-// BY COMMAND TYPE tables — see `benches/CLAUDE.md` ("Analyzing a trace").
+// BY COMMAND TYPE tables — see `benches/AGENTS.md` ("Analyzing a trace").
 // For per-side regression tracking at criterion cadence, `worktree_scaling`
 // is the worktree side and `divergent_branches` the branch side.
 //
@@ -190,7 +190,7 @@ fn bench_divergent_branches(c: &mut Criterion) {
 /// history to traverse).
 ///
 /// To see *where* a regression lands, trace one invocation and read the
-/// profile's BY CONTEXT / BY COMMAND TYPE tables — see `benches/CLAUDE.md`
+/// profile's BY CONTEXT / BY COMMAND TYPE tables — see `benches/AGENTS.md`
 /// ("Analyzing a trace"); a criterion wall time can't be decomposed by side
 /// because the worktree- and branch-side git subprocesses run concurrently on
 /// the rayon pool. For

@@ -20,7 +20,7 @@ concurrency:
 
 env:
   # Swatinem/rust-cache hashes CARGO*/RUST* into the cache key, so these track
-  # ci.yaml (.github/CLAUDE.md → Build environment).
+  # ci.yaml (.github/AGENTS.md → Build environment).
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -C debuginfo=0

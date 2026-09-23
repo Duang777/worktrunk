@@ -46,11 +46,11 @@ On a match:
 
 **Testing:**
 
-- Do the tests follow the project's testing conventions (see tests/CLAUDE.md)?
+- Do the tests follow the project's testing conventions (see tests/AGENTS.md)?
 
-**CLAUDE.md compliance:**
+**AGENTS.md compliance:**
 
-- Review the CLAUDE.md sections relevant to the changed code and flag
+- Review the AGENTS.md sections relevant to the changed code and flag
   deviations — code quality, error handling, command execution, data safety,
   system docstrings, etc.
 

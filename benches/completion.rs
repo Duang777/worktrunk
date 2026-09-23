@@ -13,7 +13,7 @@
 //! over a series of deliberately lopsided repos and still can't say which call
 //! moved, because the calls within a wave overlap. Localizing a regression is a
 //! trace's job here, exactly as it is for `full` — see "Analyzing a trace" in
-//! benches/CLAUDE.md, and note that a `-vv` run skips prewarm's rev-parse
+//! benches/AGENTS.md, and note that a `-vv` run skips prewarm's rev-parse
 //! batch and so is not quite the run users get.
 //!
 //! The benchmark uses the same 24 linked worktrees and 120 branchless branches
