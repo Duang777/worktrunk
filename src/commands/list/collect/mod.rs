@@ -187,8 +187,8 @@
 //!
 //! Reproduce end-to-end via
 //! `cargo bench --bench time_to_first_output -- list`; for a per-phase
-//! breakdown, capture a trace and run the phase-duration SQL query from
-//! `benches/AGENTS.md`:
+//! breakdown, capture a trace and inspect it as described in
+//! `benches/AGENTS.md` under "Analyzing a trace":
 //!
 //! ```bash
 //! RUST_LOG=debug ./target/release/wt -C <repo> list --progressive \

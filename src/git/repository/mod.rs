@@ -56,7 +56,9 @@
 //!   [`Repository::commit_to_tree_sha`].
 //! - *Expensive, worth persisting across invocations* (merge-tree, patch-id,
 //!   diff stats, ahead/behind) → the disk [`sha_cache`]; content-addressed by
-//!   SHA, so never stale.
+//!   SHA. An entry is stable while its producer's semantics are unchanged;
+//!   changing the producer can leave old answers in place across upgrades.
+//!   Assess that effect when changing a cache kind and describe it in the PR.
 //! - *Both expensive and hot-in-parallel* → an in-memory `DashMap` front over
 //!   the disk back, so parallel tasks don't race through the file cache for the
 //!   same key (the in-memory layer pays the first miss once; the disk layer

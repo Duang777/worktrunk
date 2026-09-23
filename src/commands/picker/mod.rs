@@ -86,8 +86,8 @@
 //! ```bash
 //! RUST_LOG=debug ./target/release/wt -C <repo> switch \
 //!   2> >(cargo run -p wt-perf --release -q -- trace > trace.json)
-//! # Open trace.json in Perfetto, or run the phase-duration SQL query
-//! # documented in benches/AGENTS.md §"What's on the critical path?".
+//! # Open trace.json in Perfetto; benches/AGENTS.md §"Analyzing a trace"
+//! # describes phase and subprocess attribution.
 //! ```
 
 mod items;
