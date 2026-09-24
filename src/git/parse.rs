@@ -145,18 +145,8 @@ impl DefaultBranchName {
 ///
 /// This correctly handles filenames with spaces and ensures both old and new
 /// paths are included for renames/copies (important for overlap detection).
-pub fn parse_porcelain_z(output: &str) -> Vec<String> {
-    parse_porcelain_z_bytes(output.as_bytes())
-        .into_iter()
-        .map(|path| String::from_utf8(path).expect("paths from str input remain UTF-8"))
-        .collect()
-}
-
-/// Parse `git status --porcelain -z` output without decoding path bytes.
-///
-/// Use this when path identity matters. Git paths are byte strings on Unix,
-/// and lossy UTF-8 conversion can make two distinct paths compare equal.
-pub fn parse_porcelain_z_bytes(output: &[u8]) -> Vec<Vec<u8>> {
+/// Raw bytes keep distinct non-UTF-8 paths distinct during comparison.
+pub fn parse_porcelain_z(output: &[u8]) -> Vec<Vec<u8>> {
     let mut files = Vec::new();
     let mut entries = output
         .split(|byte| *byte == 0)
@@ -406,72 +396,93 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_z_empty() {
-        assert!(parse_porcelain_z("").is_empty());
+        assert!(parse_porcelain_z(b"").is_empty());
     }
 
     #[test]
     fn test_parse_porcelain_z_modified_file() {
         // "M  src/main.rs\0"
         let output = " M src/main.rs\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["src/main.rs"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(files, vec![b"src/main.rs".to_vec()]);
     }
 
     #[test]
     fn test_parse_porcelain_z_multiple_files() {
         let output = " M src/main.rs\0?? new_file.txt\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["src/main.rs", "new_file.txt"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(
+            files,
+            vec![b"src/main.rs".to_vec(), b"new_file.txt".to_vec()]
+        );
     }
 
     #[test]
     fn test_parse_porcelain_z_rename() {
         // Renames: "R  new_name\0old_name\0"
         let output = "R  new_name.rs\0old_name.rs\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["new_name.rs", "old_name.rs"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(
+            files,
+            vec![b"new_name.rs".to_vec(), b"old_name.rs".to_vec()]
+        );
     }
 
     #[test]
     fn test_parse_porcelain_z_copy() {
         let output = "C  copy.rs\0original.rs\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["copy.rs", "original.rs"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(files, vec![b"copy.rs".to_vec(), b"original.rs".to_vec()]);
     }
 
     #[test]
     fn test_parse_porcelain_z_rename_among_others() {
         let output = " M keep.rs\0R  new.rs\0old.rs\0?? untracked.txt\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["keep.rs", "new.rs", "old.rs", "untracked.txt"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(
+            files,
+            vec![
+                b"keep.rs".to_vec(),
+                b"new.rs".to_vec(),
+                b"old.rs".to_vec(),
+                b"untracked.txt".to_vec()
+            ]
+        );
     }
 
     #[test]
     fn test_parse_porcelain_z_worktree_rename() {
         let output = " R new.rs\0old.rs\0?? untracked.txt\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["new.rs", "old.rs", "untracked.txt"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(
+            files,
+            vec![
+                b"new.rs".to_vec(),
+                b"old.rs".to_vec(),
+                b"untracked.txt".to_vec()
+            ]
+        );
     }
 
     #[test]
     fn test_parse_porcelain_z_spaces_in_path() {
         let output = " M path with spaces/file name.rs\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["path with spaces/file name.rs"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(files, vec![b"path with spaces/file name.rs".to_vec()]);
     }
 
     #[test]
     fn test_parse_porcelain_z_skips_short_entries() {
         // Entries shorter than 3 chars (status + space + path) are skipped
         let output = " M valid.rs\0ab\0";
-        let files = parse_porcelain_z(output);
-        assert_eq!(files, vec!["valid.rs"]);
+        let files = parse_porcelain_z(output.as_bytes());
+        assert_eq!(files, vec![b"valid.rs".to_vec()]);
     }
 
     #[test]
-    fn test_parse_porcelain_z_bytes_preserves_distinct_non_utf8_paths() {
+    fn test_parse_porcelain_z_preserves_distinct_non_utf8_paths() {
         let output = b" D collision-\xfe\0 D collision-\xff\0";
-        let files = parse_porcelain_z_bytes(output);
+        let files = parse_porcelain_z(output);
         assert_eq!(
             files,
             vec![b"collision-\xfe".to_vec(), b"collision-\xff".to_vec()]

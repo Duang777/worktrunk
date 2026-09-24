@@ -1975,6 +1975,19 @@ impl Repository {
         args: &[&str],
         timeout: Option<std::time::Duration>,
     ) -> anyhow::Result<String> {
+        Ok(String::from_utf8_lossy(&self.run_command_bytes_bounded(args, timeout)?).into_owned())
+    }
+
+    /// Run a git command and return stdout without decoding paths.
+    pub fn run_command_bytes(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
+        self.run_command_bytes_bounded(args, None)
+    }
+
+    fn run_command_bytes_bounded(
+        &self,
+        args: &[&str],
+        timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<Vec<u8>> {
         let mut cmd = self.with_object_store_env(
             Cmd::new("git")
                 .args(args.iter().copied())
@@ -1995,8 +2008,7 @@ impl Repository {
             );
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(stdout)
+        Ok(output.stdout)
     }
 
     /// Run a git command and return whether it succeeded (exit code 0).
