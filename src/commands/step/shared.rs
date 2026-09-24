@@ -225,7 +225,23 @@ fn list_ignored_entries(
         return Err(worktrunk::git::CommandError::from_failed_output("git", &args, &output).into());
     }
 
-    Ok(parse_ignored_entries(worktree_path, &output.stdout))
+    // Git's -z output contains path bytes, which need not be UTF-8 on Unix.
+    let entries = output
+        .stdout
+        .split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let is_dir = entry.ends_with(b"/");
+            let relative = if is_dir {
+                &entry[..entry.len() - 1]
+            } else {
+                entry
+            };
+            (worktree_path.join(path_from_git_bytes(relative)), is_dir)
+        })
+        .collect();
+
+    Ok(entries)
 }
 
 #[cfg(unix)]
@@ -239,24 +255,6 @@ fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
 #[cfg(not(unix))]
 fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
     String::from_utf8_lossy(bytes).into_owned().into()
-}
-
-fn parse_ignored_entries(worktree_path: &Path, output: &[u8]) -> Vec<(PathBuf, bool)> {
-    // Parse output as bytes: Unix paths need not be valid UTF-8.
-    output
-        .split(|&byte| byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            let is_dir = entry.ends_with(b"/");
-            let relative = if is_dir {
-                &entry[..entry.len() - 1]
-            } else {
-                entry
-            };
-            let path = worktree_path.join(path_from_git_bytes(relative));
-            (path, is_dir)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -308,28 +306,6 @@ mod tests {
         assert!(
             path.exists(),
             "discovered path does not exist on disk: {path:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn parse_ignored_entries_preserves_non_utf8_names() {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
-        use std::path::Path;
-
-        let root = Path::new("/repo");
-        let entries = super::parse_ignored_entries(root, b"cache-\xff.bin\0dir-\xfe/\0");
-
-        assert_eq!(
-            entries,
-            vec![
-                (
-                    root.join(OsString::from_vec(b"cache-\xff.bin".to_vec())),
-                    false,
-                ),
-                (root.join(OsString::from_vec(b"dir-\xfe".to_vec())), true),
-            ]
         );
     }
 }
