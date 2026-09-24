@@ -584,10 +584,16 @@ impl<'a> WorkingTree<'a> {
     /// 3. Users who use skip-worktree are power users who understand the implications
     /// 4. A warning wouldn't prevent data loss anyway — it's informational only
     ///
-    /// Untracked files are always included, regardless of the user's
-    /// `status.showUntrackedFiles` display preference.
+    /// Untracked files and dirty submodules are always included, regardless of
+    /// the user's `status.showUntrackedFiles` or `submodule.<name>.ignore`
+    /// display preferences.
     pub fn is_dirty(&self) -> anyhow::Result<bool> {
-        let stdout = self.run_command(&["status", "--porcelain", "--untracked-files=normal"])?;
+        let stdout = self.run_command(&[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ])?;
         Ok(!stdout.trim().is_empty())
     }
 
@@ -598,7 +604,12 @@ impl<'a> WorkingTree<'a> {
     /// [`GitError::UncommittedChanges`] in [`Self::ensure_clean`]. The same
     /// caveats as [`Self::is_dirty`] apply (skip-worktree files are invisible).
     pub fn dirty_files(&self) -> anyhow::Result<Vec<String>> {
-        let stdout = self.run_command(&["status", "--porcelain", "--untracked-files=normal"])?;
+        let stdout = self.run_command(&[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--ignore-submodules=none",
+        ])?;
         Ok(stdout.lines().map(str::to_owned).collect())
     }
 
