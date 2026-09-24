@@ -94,6 +94,61 @@ fn test_list_multiple_worktrees(repo: TestRepo) {
     assert_cmd_snapshot!(list_snapshots::command(&repo, repo.root_path()));
 }
 
+/// `git worktree list --porcelain` does not delimit path fields safely: a
+/// newline in a valid worktree path looks like a new attribute. The `-z`
+/// format must carry that path intact through discovery and JSON output.
+#[cfg(unix)]
+#[rstest]
+fn test_list_preserves_worktree_path_with_newline(repo: TestRepo) {
+    repo.write_test_config("[list]\njson-schema = 1\n");
+    let worktree_path = repo.root_path().parent().unwrap().join("linked-\nworktree");
+    repo.git_command()
+        .args(["worktree", "add", "-b", "newline-path"])
+        .arg(worktree_path.to_str().unwrap())
+        .run()
+        .unwrap();
+
+    let output = repo
+        .wt_command()
+        .args(["list", "--format=json"])
+        .current_dir(repo.root_path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "wt list should succeed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let item = items
+        .iter()
+        .find(|item| item["branch"] == "newline-path")
+        .expect("newline-path worktree should be listed");
+    assert_eq!(
+        item["path"].as_str(),
+        worktree_path.to_str(),
+        "list should preserve the complete worktree path"
+    );
+
+    let output = repo
+        .wt_command()
+        .arg("list")
+        .current_dir(repo.root_path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "wt list should succeed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r"../linked-\nworktree"),
+        "the table should render the path on one line:\n{stdout}"
+    );
+}
+
 ///
 /// Simulates realistic usage by running switch commands from the correct worktree directories.
 #[rstest]

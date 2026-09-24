@@ -2,14 +2,38 @@
 
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
 use super::{GitError, WorktreeInfo, finalize_worktree};
 
+#[cfg(unix)]
+fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+    PathBuf::from(OsString::from_vec(path.to_vec()))
+}
+
+#[cfg(not(unix))]
+fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(path).into_owned())
+}
+
 impl WorktreeInfo {
+    #[cfg(test)]
     pub(crate) fn parse_porcelain_list(output: &str) -> anyhow::Result<Vec<Self>> {
+        Self::parse_porcelain_fields(output.lines().map(str::as_bytes))
+    }
+
+    pub(crate) fn parse_porcelain_list_z(output: &[u8]) -> anyhow::Result<Vec<Self>> {
+        Self::parse_porcelain_fields(output.split(|byte| *byte == b'\0'))
+    }
+
+    fn parse_porcelain_fields<'a>(
+        fields: impl IntoIterator<Item = &'a [u8]>,
+    ) -> anyhow::Result<Vec<Self>> {
         let mut worktrees = Vec::new();
         let mut current: Option<WorktreeInfo> = None;
 
-        for line in output.lines() {
+        for line in fields {
             if line.is_empty() {
                 if let Some(wt) = current.take() {
                     worktrees.push(finalize_worktree(wt));
@@ -17,13 +41,13 @@ impl WorktreeInfo {
                 continue;
             }
 
-            let (key, value) = match line.split_once(' ') {
-                Some((k, v)) => (k, Some(v)),
+            let (key, value) = match line.iter().position(|byte| *byte == b' ') {
+                Some(index) => (&line[..index], Some(&line[index + 1..])),
                 None => (line, None),
             };
 
             match key {
-                "worktree" => {
+                b"worktree" => {
                     let Some(path) = value else {
                         return Err(GitError::ParseError {
                             message: "worktree line missing path".into(),
@@ -31,7 +55,7 @@ impl WorktreeInfo {
                         .into());
                     };
                     current = Some(WorktreeInfo {
-                        path: PathBuf::from(path),
+                        path: path_from_git_bytes(path),
                         head: String::new(),
                         branch: None,
                         bare: false,
@@ -41,16 +65,16 @@ impl WorktreeInfo {
                     });
                 }
                 key => match (key, current.as_mut()) {
-                    ("HEAD", Some(wt)) => {
+                    (b"HEAD", Some(wt)) => {
                         let Some(sha) = value else {
                             return Err(GitError::ParseError {
                                 message: "HEAD line missing SHA".into(),
                             }
                             .into());
                         };
-                        wt.head = sha.to_string();
+                        wt.head = String::from_utf8_lossy(sha).into_owned();
                     }
-                    ("branch", Some(wt)) => {
+                    (b"branch", Some(wt)) => {
                         // Strip refs/heads/ prefix if present
                         let Some(branch_ref) = value else {
                             return Err(GitError::ParseError {
@@ -58,23 +82,26 @@ impl WorktreeInfo {
                             }
                             .into());
                         };
+                        let branch_ref = String::from_utf8_lossy(branch_ref);
                         let branch = branch_ref
                             .strip_prefix("refs/heads/")
-                            .unwrap_or(branch_ref)
+                            .unwrap_or(&branch_ref)
                             .to_string();
                         wt.branch = Some(branch);
                     }
-                    ("bare", Some(wt)) => {
+                    (b"bare", Some(wt)) => {
                         wt.bare = true;
                     }
-                    ("detached", Some(wt)) => {
+                    (b"detached", Some(wt)) => {
                         wt.detached = true;
                     }
-                    ("locked", Some(wt)) => {
-                        wt.locked = Some(value.unwrap_or_default().to_string());
+                    (b"locked", Some(wt)) => {
+                        wt.locked =
+                            Some(String::from_utf8_lossy(value.unwrap_or_default()).into_owned());
                     }
-                    ("prunable", Some(wt)) => {
-                        wt.prunable = Some(value.unwrap_or_default().to_string());
+                    (b"prunable", Some(wt)) => {
+                        wt.prunable =
+                            Some(String::from_utf8_lossy(value.unwrap_or_default()).into_owned());
                     }
                     _ => {
                         // Ignore unknown attributes or attributes before first worktree
@@ -388,6 +415,19 @@ mod tests {
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         // Should use the branch name as-is when no refs/heads/ prefix
         assert_eq!(wt.branch, Some("main".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_parse_porcelain_list_z_preserves_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let output = b"worktree /path/to/linked-\xff\0HEAD abc123\0branch refs/heads/feature\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
+        let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
+
+        assert_eq!(wt.path.as_os_str().as_bytes(), b"/path/to/linked-\xff");
+        assert_eq!(wt.branch.as_deref(), Some("feature"));
     }
 
     // ============================================================================
