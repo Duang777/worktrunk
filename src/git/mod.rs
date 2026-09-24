@@ -90,7 +90,7 @@ pub use error::{
     // Render a single error via Diagnostic if it implements one
     try_render_diagnostic,
 };
-pub use parse::{parse_porcelain_z, parse_untracked_files};
+pub use parse::{parse_porcelain_z, parse_porcelain_z_bytes, parse_untracked_files};
 pub use recover::{current_or_recover, cwd_removed_hint};
 pub use remove::{
     BranchDeletionMode, BranchDeletionOutcome, BranchDeletionResult, RemovalOutput, RemoveOptions,

@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use super::worktree::{RemovalPlan, SharedBranchCheckout};
 use anyhow::{Context, bail};
 use color_print::cformat;
+#[cfg(test)]
+use worktrunk::git::parse_porcelain_z;
 use worktrunk::git::{
-    BranchDeletionMode, GitError, IntegrationReason, RefSnapshot, Repository, WorkingTree,
-    WorktreeInfo, parse_porcelain_z, parse_untracked_files,
+    BranchDeletionMode, CommandError, GitError, IntegrationReason, RefSnapshot, Repository,
+    WorkingTree, WorktreeInfo, parse_porcelain_z_bytes, parse_untracked_files,
 };
 use worktrunk::path::format_path_for_display;
 use worktrunk::styling::{
@@ -451,18 +453,24 @@ impl RepositoryCliExt for Repository {
         // filenames with spaces and renames ("XY path\0" for normal files,
         // "XY new_path\0old_path\0" for renames/copies).
         let wt = self.worktree_at(wt_path);
-        let wt_status_output = wt.run_command(&["status", "--porcelain", "-z", "-uall"])?;
-        if wt_status_output.trim().is_empty() {
+        let status_args = ["status", "--porcelain", "-z", "-uall"];
+        let wt_status_output = wt.run_command_output(&status_args)?;
+        if !wt_status_output.status.success() {
+            return Err(
+                CommandError::from_failed_output("git", &status_args, &wt_status_output).into(),
+            );
+        }
+        if wt_status_output.stdout.is_empty() {
             return Ok(());
         }
 
-        let push_files = self.changed_files(target_branch, "HEAD")?;
-        let wt_files: Vec<String> = parse_porcelain_z(&wt_status_output);
+        let push_files = self.changed_files_raw(target_branch, "HEAD")?;
+        let wt_files = parse_porcelain_z_bytes(&wt_status_output.stdout);
 
         let overlapping: Vec<String> = push_files
             .iter()
             .filter(|f| wt_files.contains(f))
-            .cloned()
+            .map(|path| String::from_utf8_lossy(path).into_owned())
             .collect();
 
         if !overlapping.is_empty() {

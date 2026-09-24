@@ -160,6 +160,115 @@ fn test_push_dirty_target_changes_stay_in_place(mut repo: TestRepo) {
     );
 }
 
+/// Distinct non-UTF-8 paths must not collapse to the same replacement string
+/// during target-conflict detection.
+#[cfg(unix)]
+#[rstest]
+fn test_push_distinguishes_non_utf8_target_paths(repo: TestRepo) {
+    let blob_output = repo
+        .git_command()
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin_bytes("content\n")
+        .run()
+        .unwrap();
+    assert!(blob_output.status.success());
+    let blob = String::from_utf8(blob_output.stdout).unwrap();
+    let blob = blob.trim();
+
+    // Commit two paths that differ only in their invalid UTF-8 byte.
+    let mut index_info = Vec::new();
+    for suffix in [0xfe, 0xff] {
+        index_info.extend_from_slice(format!("100644 {blob}\tcollision-").as_bytes());
+        index_info.extend([suffix, 0]);
+    }
+    let add_paths = repo
+        .git_command()
+        .args(["update-index", "-z", "--index-info"])
+        .stdin_bytes(index_info)
+        .run()
+        .unwrap();
+    assert!(add_paths.status.success());
+    repo.run_git(&["commit", "-m", "Add raw paths"]);
+
+    // The target worktree has an uncommitted deletion of collision-\xFE only.
+    let mut ff_path = b"collision-".to_vec();
+    ff_path.extend([0xff, 0]);
+    let hide_ff = repo
+        .git_command()
+        .args(["update-index", "--skip-worktree", "-z", "--stdin"])
+        .stdin_bytes(ff_path.clone())
+        .run()
+        .unwrap();
+    assert!(hide_ff.status.success());
+
+    // Build the feature worktree without materializing either raw path. Its
+    // commit deletes collision-\xFF while hiding collision-\xFE.
+    let feature_wt = repo.root_path().parent().unwrap().join("repo.feature");
+    let add_worktree = repo
+        .git_command()
+        .args([
+            "worktree",
+            "add",
+            "--no-checkout",
+            "-b",
+            "feature",
+            feature_wt.to_str().unwrap(),
+            "main",
+        ])
+        .run()
+        .unwrap();
+    assert!(add_worktree.status.success());
+    repo.run_git_in(&feature_wt, &["read-tree", "HEAD"]);
+
+    let mut fe_path = b"collision-".to_vec();
+    fe_path.extend([0xfe, 0]);
+    let hide_fe = repo
+        .git_command()
+        .current_dir(&feature_wt)
+        .args(["update-index", "--skip-worktree", "-z", "--stdin"])
+        .stdin_bytes(fe_path)
+        .run()
+        .unwrap();
+    assert!(hide_fe.status.success());
+    let remove_ff = repo
+        .git_command()
+        .current_dir(&feature_wt)
+        .args(["update-index", "--force-remove", "-z", "--stdin"])
+        .stdin_bytes(ff_path)
+        .run()
+        .unwrap();
+    assert!(remove_ff.status.success());
+    repo.run_git_in(&feature_wt, &["commit", "-m", "Delete one raw path"]);
+
+    let target_status = repo
+        .git_command()
+        .args(["status", "--porcelain", "-z", "-uall"])
+        .run()
+        .unwrap();
+    assert_eq!(target_status.stdout, b" D collision-\xfe\0");
+    let repository = worktrunk::git::Repository::at(repo.root_path()).unwrap();
+    assert_eq!(
+        repository.changed_files_raw("main", "feature").unwrap(),
+        vec![b"collision-\xff".to_vec()]
+    );
+
+    let output = repo
+        .wt_command()
+        .current_dir(&feature_wt)
+        .args(["step", "push", "main"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "distinct raw paths must not conflict: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        repo.git_output(&["rev-parse", "main"]),
+        repo.git_output(&["rev-parse", "feature"])
+    );
+}
+
 #[rstest]
 fn test_push_dirty_target_overlap_renamed_file(mut repo: TestRepo) {
     // Regression test: overlap detection must detect conflicts when a file is renamed

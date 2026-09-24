@@ -146,8 +146,21 @@ impl DefaultBranchName {
 /// This correctly handles filenames with spaces and ensures both old and new
 /// paths are included for renames/copies (important for overlap detection).
 pub fn parse_porcelain_z(output: &str) -> Vec<String> {
+    parse_porcelain_z_bytes(output.as_bytes())
+        .into_iter()
+        .map(|path| String::from_utf8(path).expect("paths from str input remain UTF-8"))
+        .collect()
+}
+
+/// Parse `git status --porcelain -z` output without decoding path bytes.
+///
+/// Use this when path identity matters. Git paths are byte strings on Unix,
+/// and lossy UTF-8 conversion can make two distinct paths compare equal.
+pub fn parse_porcelain_z_bytes(output: &[u8]) -> Vec<Vec<u8>> {
     let mut files = Vec::new();
-    let mut entries = output.split('\0').filter(|s| !s.is_empty());
+    let mut entries = output
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty());
 
     while let Some(entry) = entries.next() {
         // Each entry is "XY path" where XY is exactly 2 status chars
@@ -157,13 +170,12 @@ pub fn parse_porcelain_z(output: &str) -> Vec<String> {
 
         let status = &entry[0..2];
         let path = &entry[3..];
-        files.push(path.to_string());
+        files.push(path.to_vec());
 
         // For renames (R) and copies (C), the next NUL-separated field is the old path
-        if status.contains(['R', 'C'])
-            && let Some(old_path) = entries.next()
-        {
-            files.push(old_path.to_string());
+        let has_source_path = status.contains(&b'R') || status.contains(&b'C');
+        if has_source_path && let Some(old_path) = entries.next() {
+            files.push(old_path.to_vec());
         }
     }
 
@@ -454,6 +466,16 @@ mod tests {
         let output = " M valid.rs\0ab\0";
         let files = parse_porcelain_z(output);
         assert_eq!(files, vec!["valid.rs"]);
+    }
+
+    #[test]
+    fn test_parse_porcelain_z_bytes_preserves_distinct_non_utf8_paths() {
+        let output = b" D collision-\xfe\0 D collision-\xff\0";
+        let files = parse_porcelain_z_bytes(output);
+        assert_eq!(
+            files,
+            vec![b"collision-\xfe".to_vec(), b"collision-\xff".to_vec()]
+        );
     }
 
     // ============================================================================

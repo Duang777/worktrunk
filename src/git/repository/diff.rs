@@ -321,7 +321,20 @@ impl Repository {
     /// a file is renamed in one branch but has uncommitted changes under the
     /// old name).
     pub fn changed_files(&self, base: &str, head: &str) -> anyhow::Result<Vec<String>> {
-        let stdout = self.run_command(&PlumbingDiff::Tree.args(&[
+        Ok(self
+            .changed_files_raw(base, head)?
+            .into_iter()
+            .map(|path| String::from_utf8_lossy(&path).into_owned())
+            .collect())
+    }
+
+    /// Get changed repository-root-relative paths without decoding their raw
+    /// Git bytes.
+    ///
+    /// Use this when comparing path identity. [`Self::changed_files`] remains
+    /// the display-oriented string API.
+    pub fn changed_files_raw(&self, base: &str, head: &str) -> anyhow::Result<Vec<Vec<u8>>> {
+        let args = PlumbingDiff::Tree.args(&[
             "-r",
             "--name-only",
             "-z",
@@ -329,11 +342,16 @@ impl Repository {
             base,
             head,
             "--",
-        ]))?;
-        Ok(stdout
-            .split('\0')
+        ]);
+        let output = self.run_command_output(&args)?;
+        if !output.status.success() {
+            return Err(CommandError::from_failed_output("git", &args, &output).into());
+        }
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(str::to_string)
+            .map(<[u8]>::to_vec)
             .collect())
     }
 
