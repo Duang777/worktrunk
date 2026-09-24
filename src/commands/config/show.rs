@@ -318,7 +318,7 @@ pub(super) fn home_dir() -> Option<PathBuf> {
 /// harness (see [`super::harness_listing`]).
 ///
 /// Honors `CLAUDE_CONFIG_DIR`, which Claude Code uses to relocate its config
-/// away from the default `~/.claude`. A leading `~/` in the value is expanded
+/// away from the default `~/.claude`. A leading `~` in the value is expanded
 /// against the home directory; the shell normally expands it before the
 /// variable is set, so a literal `~` only reaches us when the variable is set
 /// in a non-shell context.
@@ -326,7 +326,10 @@ pub(super) fn claude_config_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR")
         && !dir.is_empty()
     {
-        if let Some(rest) = dir.strip_prefix("~/") {
+        if dir == "~" {
+            return home_dir();
+        }
+        if let Ok(rest) = Path::new(&dir).strip_prefix("~") {
             return home_dir().map(|home| home.join(rest));
         }
         return Some(PathBuf::from(dir));

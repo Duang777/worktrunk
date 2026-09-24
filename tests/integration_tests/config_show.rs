@@ -6649,19 +6649,24 @@ fn test_plugins_claude_install_statusline_honors_claude_config_dir(
 }
 
 #[rstest]
+#[case::tilde_slash("~/custom-claude", "custom-claude/settings.json")]
+#[case::bare_tilde("~", "settings.json")]
 fn test_plugins_claude_install_statusline_expands_tilde_in_claude_config_dir(
     repo: TestRepo,
     temp_home: TempDir,
+    #[case] config_dir: &str,
+    #[case] expected_settings: &str,
 ) {
-    // A literal `~/` in CLAUDE_CONFIG_DIR (which only reaches us when the
+    // A literal tilde in CLAUDE_CONFIG_DIR (which only reaches us when the
     // variable is set outside a shell) is expanded against the home directory,
-    // not treated as a relative path under the cwd.
+    // not treated as a relative path under the cwd. A bare `~` names the home
+    // directory itself, so it has no `/` for a prefix strip to key on.
     let mut cmd = wt_command();
     repo.configure_wt_cmd(&mut cmd);
     cmd.args(["config", "plugins", "claude", "install-statusline", "--yes"])
         .current_dir(repo.root_path());
     set_temp_home_env(&mut cmd, temp_home.path());
-    cmd.env("CLAUDE_CONFIG_DIR", "~/custom-claude");
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
 
     let output = cmd.output().unwrap();
     assert!(
@@ -6670,8 +6675,13 @@ fn test_plugins_claude_install_statusline_expands_tilde_in_claude_config_dir(
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // `~/custom-claude` expanded to <home>/custom-claude.
-    let settings_path = temp_home.path().join("custom-claude/settings.json");
+    // The tilde expanded against <home>.
+    let settings_path = temp_home.path().join(expected_settings);
+    assert!(
+        settings_path.exists(),
+        "expected settings.json at {}",
+        settings_path.display()
+    );
     let content = fs::read_to_string(&settings_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(
