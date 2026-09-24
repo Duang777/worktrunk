@@ -3709,6 +3709,45 @@ fn test_remove_background_fallback_force_delete_branch(mut repo: TestRepo) {
     let _ = std::fs::remove_file(&staged_path);
 }
 
+/// The force-delete fallback must pass a flag-like branch after `--`. Git
+/// accepts such refs through plumbing, even though its branch parser cannot
+/// create or delete them without an option separator.
+#[rstest]
+fn test_remove_background_fallback_force_deletes_flag_like_branch(mut repo: TestRepo) {
+    repo.commit("initial");
+    let worktree_path = repo.add_worktree("flag-like-holder");
+    repo.run_git(&["update-ref", "refs/heads/-x", "HEAD"]);
+    repo.run_git_in(&worktree_path, &["symbolic-ref", "HEAD", "refs/heads/-x"]);
+    repo.run_git(&["branch", "-D", "flag-like-holder"]);
+    let staged_path = block_staged_rename(&repo, &worktree_path);
+
+    let output = repo
+        .wt_command()
+        .args(["remove", "--force", "-D", worktree_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "wt remove --force -D should start the legacy fallback: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    crate::common::wait_for("flag-like worktree removed by legacy fallback", || {
+        !worktree_path.exists()
+    });
+    crate::common::wait_for("flag-like branch force-deleted by legacy fallback", || {
+        !repo
+            .git_command()
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/-x"])
+            .run()
+            .unwrap()
+            .status
+            .success()
+    });
+
+    let _ = std::fs::remove_file(&staged_path);
+}
+
 /// The rename-failure fallback removes a detached-HEAD worktree with no branch
 /// to delete — the `_` arm of the fallback command builder. `wt remove` resolves
 /// the detached worktree by path.

@@ -773,7 +773,7 @@ pub fn build_remove_command(
         Some(branch_name) => {
             let branch_escaped = escape(branch_name.into());
             format!(
-                "{}git worktree remove{} {} && git branch -D {}",
+                "{}git worktree remove{} {} && git branch -D -- {}",
                 prefix, force_flag, worktree_escaped, branch_escaped
             )
         }
@@ -879,18 +879,18 @@ mod tests {
 
         // changed_directory=true: sleep before removal
         assert_snapshot!(build_remove_command(&path, None, false, true), @"sleep 1 && git worktree remove /tmp/test-worktree");
-        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, true), @"sleep 1 && git worktree remove /tmp/test-worktree && git branch -D feature-branch");
+        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, true), @"sleep 1 && git worktree remove /tmp/test-worktree && git branch -D -- feature-branch");
 
         // changed_directory=false: no sleep
         assert_snapshot!(build_remove_command(&path, None, false, false), @"git worktree remove /tmp/test-worktree");
-        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, false), @"git worktree remove /tmp/test-worktree && git branch -D feature-branch");
+        assert_snapshot!(build_remove_command(&path, Some("feature-branch"), false, false), @"git worktree remove /tmp/test-worktree && git branch -D -- feature-branch");
 
         // With force flag
         assert_snapshot!(build_remove_command(&path, None, true, true), @"sleep 1 && git worktree remove --force /tmp/test-worktree");
 
         // Shell escaping for special characters
         let special_path = PathBuf::from("/tmp/test worktree");
-        assert_snapshot!(build_remove_command(&special_path, Some("feature/branch"), false, true), @"sleep 1 && git worktree remove '/tmp/test worktree' && git branch -D feature/branch");
+        assert_snapshot!(build_remove_command(&special_path, Some("feature/branch"), false, true), @"sleep 1 && git worktree remove '/tmp/test worktree' && git branch -D -- feature/branch");
     }
 
     #[test]
