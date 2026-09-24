@@ -298,6 +298,28 @@ fn test_copy_ignored_basic(mut repo: TestRepo) {
     );
 }
 
+/// Git paths are byte strings on Linux. The `-z` discovery output must reach
+/// the filesystem unchanged instead of replacing invalid UTF-8 with U+FFFD.
+#[cfg(target_os = "linux")]
+#[rstest]
+fn test_copy_ignored_preserves_non_utf8_filename(mut repo: TestRepo) {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let feature_path = repo.add_worktree("feature");
+    let name = OsString::from_vec(b"cache-\xff.bin".to_vec());
+    fs::write(repo.root_path().join(&name), "payload").unwrap();
+    fs::write(repo.root_path().join(".gitignore"), "cache-*.bin\n").unwrap();
+
+    run_copy_ignored(&repo, &feature_path);
+
+    assert_eq!(
+        fs::read(feature_path.join(name)).unwrap(),
+        b"payload",
+        "copy-ignored must preserve the filename's original bytes"
+    );
+}
+
 /// Test idempotent behavior: running twice should succeed (skips existing files)
 #[rstest]
 fn test_copy_ignored_idempotent(mut repo: TestRepo) {
