@@ -1070,6 +1070,23 @@ impl<'a> WorkingTree<'a> {
         }
     }
 
+    /// Determine whether staging with `mode` would leave content to commit.
+    ///
+    /// Staging modes are evaluated against a temporary index so staged and
+    /// unstaged changes combine exactly as `git add` would, without modifying
+    /// the user's index.
+    pub fn has_committable_changes(&self, mode: crate::config::StageMode) -> anyhow::Result<bool> {
+        match mode {
+            crate::config::StageMode::None => self.has_staged_changes(),
+            crate::config::StageMode::All | crate::config::StageMode::Tracked => {
+                let base = self.index_base()?;
+                let index = self.temp_index()?;
+                index.stage(mode)?;
+                index.has_staged_changes(&base)
+            }
+        }
+    }
+
     /// Check whether this worktree has initialized submodules.
     ///
     /// Uses `git submodule status --recursive` and parses its stable single-character
@@ -1156,7 +1173,8 @@ impl<'a> WorkingTree<'a> {
 /// the working-tree conflict task (write-tree of tracked changes, for
 /// merge-conflict probing), `wt step diff` (diff vs target merge-base with
 /// untracked), `wt step commit --dry-run` (mirror its `--stage` mode without
-/// changing the user's index), and the `wt switch` unified/working preview tabs.
+/// changing the user's index), `wt merge` (check whether its `--stage` mode
+/// would produce a commit), and the `wt switch` unified/working preview tabs.
 pub struct TempIndex {
     temp: tempfile::TempPath,
     worktree_root: PathBuf,
@@ -1201,6 +1219,25 @@ impl TempIndex {
     fn write_tree(&self) -> anyhow::Result<String> {
         self.run_command(["write-tree"])
             .map(|output| output.trim().to_string())
+    }
+
+    fn has_staged_changes(&self, base: &str) -> anyhow::Result<bool> {
+        let args = PlumbingDiff::Index.args(&[
+            "--cached",
+            "--ita-invisible-in-index",
+            "--quiet",
+            "--end-of-options",
+            base,
+        ]);
+        let output = self
+            .command(args.iter().copied())
+            .run()
+            .with_context(|| format!("Failed to execute: git {}", args.join(" ")))?;
+        match output.status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => Err(CommandError::from_failed_output("git", &args, &output).into()),
+        }
     }
 
     /// Register untracked files in the temporary index without adding their
@@ -1413,6 +1450,73 @@ mod tests {
         assert!(
             repo.current_worktree().has_staged_changes().unwrap(),
             "a staged gitlink must stay visible through submodule.<name>.ignore"
+        );
+    }
+
+    #[test]
+    fn has_committable_changes_matches_stage_modes_without_mutating_index() {
+        let test = TestRepo::with_initial_commit();
+        std::fs::write(test.root_path().join("tracked.txt"), "base\n").unwrap();
+        test.run_git(&["add", "tracked.txt"]);
+        test.run_git(&["commit", "-m", "add tracked file"]);
+        std::fs::write(test.root_path().join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(test.root_path().join("untracked.txt"), "new\n").unwrap();
+
+        let repo = Repository::at(test.root_path()).unwrap();
+        let worktree = repo.current_worktree();
+        assert!(
+            worktree
+                .has_committable_changes(crate::config::StageMode::Tracked)
+                .unwrap()
+        );
+        assert!(
+            worktree
+                .has_committable_changes(crate::config::StageMode::All)
+                .unwrap()
+        );
+        assert!(
+            !worktree
+                .has_committable_changes(crate::config::StageMode::None)
+                .unwrap(),
+            "temporary staging must not modify the real index"
+        );
+
+        test.run_git(&["add", "tracked.txt"]);
+        assert!(
+            worktree
+                .has_committable_changes(crate::config::StageMode::None)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn has_committable_changes_all_ignores_dirty_submodule_contents() {
+        let test = TestRepo::with_initial_commit();
+        let sub_source = test.root_path().parent().unwrap().join("sub-source");
+        std::fs::create_dir_all(&sub_source).unwrap();
+        test.run_git_in(&sub_source, &["init", "-b", "main"]);
+        std::fs::write(sub_source.join("sub.txt"), "base\n").unwrap();
+        test.run_git_in(&sub_source, &["add", "sub.txt"]);
+        test.run_git_in(&sub_source, &["commit", "-m", "sub init"]);
+        test.run_git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub_source.to_str().unwrap(),
+            "submod",
+        ]);
+        test.run_git(&["commit", "-m", "add submodule"]);
+        std::fs::write(test.root_path().join("submod/sub.txt"), "dirty\n").unwrap();
+
+        let repo = Repository::at(test.root_path()).unwrap();
+        let worktree = repo.current_worktree();
+        assert!(worktree.is_dirty().unwrap());
+        assert!(
+            !worktree
+                .has_committable_changes(crate::config::StageMode::All)
+                .unwrap(),
+            "dirty submodule contents cannot be staged in the parent repository"
         );
     }
 

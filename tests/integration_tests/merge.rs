@@ -600,6 +600,63 @@ fn test_merge_auto_commit_deterministic(mut repo_with_main_worktree: TestRepo) {
     ));
 }
 
+/// `--stage=none` and `--stage=tracked` exclude untracked files from the
+/// auto-commit. An untracked-only worktree therefore has nothing to commit,
+/// but the existing feature commits should still merge while the file stays
+/// in the preserved source worktree.
+#[rstest]
+fn test_merge_ignores_untracked_only_changes_outside_stage_scope(
+    mut repo_with_main_worktree: TestRepo,
+    #[values("none", "tracked")] stage: &str,
+) {
+    let repo = &mut repo_with_main_worktree;
+    let feature_wt =
+        repo.add_worktree_with_commit("feature", "feature.txt", "feature", "Add feature");
+    fs::create_dir_all(feature_wt.join(".config")).unwrap();
+    repo.commit_in_worktree(
+        &feature_wt,
+        ".config/wt.toml",
+        r#"pre-commit = "touch pre-commit-ran""#,
+        "Add pre-commit hook",
+    );
+    let feature_tip = repo.git_output(&["rev-parse", "feature"]);
+    fs::write(feature_wt.join("untracked.txt"), "scratch").unwrap();
+
+    let output = repo
+        .wt_command()
+        .args([
+            "merge",
+            "main",
+            &format!("--stage={stage}"),
+            "--no-squash",
+            "--no-remove",
+            "--yes",
+        ])
+        .current_dir(&feature_wt)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "merge with --stage={stage} should skip the empty auto-commit: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(repo.git_output(&["rev-parse", "main"]), feature_tip);
+    assert_eq!(
+        repo.git_output(&["rev-parse", "feature"]),
+        feature_tip,
+        "skipping the auto-commit must not add a commit to the feature branch"
+    );
+    assert!(
+        feature_wt.join("untracked.txt").exists(),
+        "the untracked file must remain in the preserved source worktree"
+    );
+    assert!(
+        !feature_wt.join("pre-commit-ran").exists(),
+        "pre-commit must not run when the stage mode leaves nothing to commit"
+    );
+}
+
 #[rstest]
 fn test_merge_auto_commit_with_llm(mut repo_with_main_worktree: TestRepo) {
     let repo = &mut repo_with_main_worktree;
