@@ -785,7 +785,7 @@ fn test_relocate_swap(repo: TestRepo) {
 
 /// Two independent relocation cycles must not share a temporary worktree path.
 ///
-/// These branch names produce the same filename under the legacy 3-character
+/// These branch names produce the same filename under the current 3-character
 /// hash. The first cycle keeps its worktree in staging until all cycles have
 /// been broken, so the second cycle used to fail when it tried to reuse that
 /// live path.
@@ -793,6 +793,11 @@ fn test_relocate_swap(repo: TestRepo) {
 fn test_relocate_disjoint_swaps_with_colliding_temp_names(repo: TestRepo) {
     const FIRST: &str = "a/a-a-a/a-a/a/a-a/a";
     const SECOND: &str = "a-a-a-a/a/a-a/a/a-a";
+    assert_eq!(
+        worktrunk::path::sanitize_for_filename(FIRST),
+        worktrunk::path::sanitize_for_filename(SECOND),
+        "test premise: both branches must sanitize to the same filename"
+    );
 
     let parent = worktree_parent(&repo);
     let first_source = parent.join("aaa-first");
