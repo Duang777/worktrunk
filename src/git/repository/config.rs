@@ -150,6 +150,24 @@ impl Repository {
         }
     }
 
+    /// Read matching config entries without using newlines as record boundaries.
+    ///
+    /// `git config --null --get-regexp` emits `key\nvalue\0` records, so values
+    /// containing newlines remain intact. The ordinary output from
+    /// [`Self::get_config_regexp`] cannot distinguish those newlines from the
+    /// separators between entries.
+    pub fn config_regexp_entries(&self, pattern: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let args = ["config", "--null", "--get-regexp", pattern];
+        let output = self.run_command_output(&args)?;
+        if output.status.success() {
+            Ok(parse_config_regexp_z(&output.stdout))
+        } else if output.status.code() == Some(1) {
+            Ok(Vec::new())
+        } else {
+            Err(CommandError::from_failed_output("git", &args, &output).into())
+        }
+    }
+
     /// Read a user-defined marker from `worktrunk.state.<branch>.marker` in git config.
     ///
     /// Markers are stored as JSON: `{"marker": "text", "set_at": unix_timestamp}`.
@@ -186,15 +204,13 @@ impl Repository {
     pub fn vars_entries(&self, branch: &str) -> std::collections::BTreeMap<String, String> {
         let escaped = regex::escape(branch);
         let pattern = format!(r"^worktrunk\.state\.{escaped}\.vars\.");
-        let output = self.get_config_regexp(&pattern).unwrap_or_default();
-
         let prefix = format!("worktrunk.state.{branch}.vars.");
-        output
-            .lines()
-            .filter_map(|line| {
-                let (config_key, value) = line.split_once(' ')?;
+        self.config_regexp_entries(&pattern)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(config_key, value)| {
                 let key = config_key.strip_prefix(&prefix)?;
-                Some((key.to_string(), value.to_string()))
+                Some((key.to_string(), value))
             })
             .collect()
     }
@@ -207,25 +223,22 @@ impl Repository {
     pub fn all_vars_entries(
         &self,
     ) -> std::collections::HashMap<String, std::collections::BTreeMap<String, String>> {
-        let output = self
-            .get_config_regexp(r"^worktrunk\.state\..+\.vars\.")
+        let entries = self
+            .config_regexp_entries(r"^worktrunk\.state\..+\.vars\.")
             .unwrap_or_default();
 
         let mut result: std::collections::HashMap<
             String,
             std::collections::BTreeMap<String, String>,
         > = std::collections::HashMap::new();
-        for line in output.lines() {
-            let Some((config_key, value)) = line.split_once(' ') else {
-                continue;
-            };
-            let Some((branch, key)) = parse_vars_config_key(config_key) else {
+        for (config_key, value) in entries {
+            let Some((branch, key)) = parse_vars_config_key(&config_key) else {
                 continue;
             };
             result
                 .entry(branch.to_string())
                 .or_default()
-                .insert(key.to_string(), value.to_string());
+                .insert(key.to_string(), value);
         }
         result
     }
@@ -1059,6 +1072,23 @@ fn parse_branch_config_key(config_key: &str) -> Option<(&str, &str)> {
     config_key.strip_prefix("branch.")?.rsplit_once('.')
 }
 
+/// Parse `git config --null --get-regexp` output.
+///
+/// Each NUL-terminated record contains `key\nvalue`. Only the first newline
+/// separates the fields; later newlines are part of the value.
+fn parse_config_regexp_z(stdout: &[u8]) -> Vec<(String, String)> {
+    stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'\n')?;
+            let key = String::from_utf8_lossy(&entry[..separator]).into_owned();
+            let value = String::from_utf8_lossy(&entry[separator + 1..]).into_owned();
+            Some((key, value))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1187,7 +1217,7 @@ mod tests {
     }
 
     /// The snapshot read must parse the same entries as the subprocess read,
-    /// including branch names that themselves contain `.vars.`.
+    /// including multiline values and branch names containing `.vars.`.
     #[test]
     fn test_all_vars_from_snapshot_matches_subprocess_read() {
         let test = TestRepo::with_initial_commit();
@@ -1195,7 +1225,7 @@ mod tests {
 
         repo.set_config("worktrunk.state.feature.vars.ticket", "JIRA-1")
             .unwrap();
-        repo.set_config("worktrunk.state.feature.vars.note", "a note")
+        repo.set_config("worktrunk.state.feature.vars.note", "a note\ncontinued")
             .unwrap();
         repo.set_config("worktrunk.state.weird.vars.branch.vars.key", "v")
             .unwrap();
@@ -1203,7 +1233,7 @@ mod tests {
         let snapshot = repo.all_vars_from_snapshot().unwrap();
         assert_eq!(snapshot, repo.all_vars_entries());
         assert_eq!(snapshot["feature"]["ticket"], "JIRA-1");
-        assert_eq!(snapshot["feature"]["note"], "a note");
+        assert_eq!(snapshot["feature"]["note"], "a note\ncontinued");
         assert_eq!(snapshot["weird.vars.branch"]["key"], "v");
     }
 

@@ -2595,6 +2595,42 @@ fn test_vars_set_json_value(repo: TestRepo) {
 }
 
 #[rstest]
+fn test_vars_list_json_preserves_multiline_value(repo: TestRepo) {
+    let value = "line one\nline two";
+    let output = wt_state_cmd(&repo, "vars", "set", &[&format!("note={value}")])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let output = wt_state_cmd(&repo, "vars", "get", &["note"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "line one\nline two\n"
+    );
+
+    let output = wt_state_cmd(&repo, "vars", "list", &["--format=json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["note"], value);
+
+    let output = wt_state_cmd(&repo, "vars", "clear", &["--all"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let output = wt_state_cmd(&repo, "vars", "get", &["note"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[rstest]
 fn test_vars_get_missing_key(repo: TestRepo) {
     let output = wt_state_cmd(&repo, "vars", "get", &["nonexistent"])
         .output()

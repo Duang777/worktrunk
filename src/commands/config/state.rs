@@ -1774,13 +1774,11 @@ fn clear_all_markers(repo: &Repository) -> anyhow::Result<usize> {
 }
 
 fn clear_matching_config(repo: &Repository, pattern: &str) -> anyhow::Result<usize> {
-    let output = repo.get_config_regexp(pattern)?;
+    let entries = repo.config_regexp_entries(pattern)?;
     let mut cleared = 0;
-    for line in output.lines() {
-        if let Some(config_key) = line.split_whitespace().next() {
-            repo.unset_config(config_key)?;
-            cleared += 1;
-        }
+    for (config_key, _) in entries {
+        repo.unset_config(&config_key)?;
+        cleared += 1;
     }
     Ok(cleared)
 }
@@ -1805,23 +1803,19 @@ pub(super) struct MarkerEntry {
 
 /// Get all branch markers from git config with timestamps
 pub(super) fn all_markers(repo: &Repository) -> Vec<MarkerEntry> {
-    let output = repo
-        .get_config_regexp(r"^worktrunk\.state\..+\.marker$")
+    let entries = repo
+        .config_regexp_entries(r"^worktrunk\.state\..+\.marker$")
         .unwrap_or_default();
 
     let mut markers = Vec::new();
-    for line in output.lines() {
-        // Format: "worktrunk.state.<branch>.marker json_value"
-        let Some((key, value)) = line.split_once(' ') else {
-            continue;
-        };
+    for (key, value) in entries {
         let Some(branch) = key
             .strip_prefix("worktrunk.state.")
             .and_then(|s| s.strip_suffix(".marker"))
         else {
             continue;
         };
-        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) else {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) else {
             continue; // Skip invalid JSON
         };
         let Some(marker) = parsed.get("marker").and_then(|v| v.as_str()) else {
