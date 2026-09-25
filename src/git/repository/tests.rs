@@ -1134,6 +1134,26 @@ fn prewarm_from_linked_worktree_under_worktree_config_preserves_is_bare() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn prewarm_from_worktree_with_newline_path_preserves_current_branch() {
+    use super::Repository;
+    use crate::testing::TestRepo;
+
+    let mut test = TestRepo::with_initial_commit();
+    let linked = test.root_path().parent().unwrap().join("linked-\nworktree");
+    let linked = test.add_worktree_at_path("feature", &linked);
+
+    Repository::prewarm_at(&linked);
+    let repo = Repository::at(&linked).unwrap();
+
+    assert_eq!(
+        repo.current_worktree().branch().unwrap().as_deref(),
+        Some("feature"),
+        "prewarm must not cache a newline-split rev-parse field as detached HEAD"
+    );
+}
+
 #[test]
 fn repo_path_from_linked_worktree_under_worktree_config_is_git_common_dir() {
     // Companion to the is_bare regression above: once `is_bare()` reads

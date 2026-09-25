@@ -17,6 +17,11 @@ pub(crate) fn path_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
+pub(crate) fn path_from_git_stdout(stdout: &[u8]) -> PathBuf {
+    let path = stdout.strip_suffix(b"\n").unwrap_or(stdout);
+    path_from_git_bytes(path)
+}
+
 impl WorktreeInfo {
     pub(crate) fn parse_porcelain_list_z(output: &[u8]) -> anyhow::Result<Vec<Self>> {
         Self::parse_porcelain_fields(output.split(|byte| *byte == b'\0'))

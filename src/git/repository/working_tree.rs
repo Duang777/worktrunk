@@ -13,23 +13,10 @@ use crate::shell_exec::Cmd;
 use dunce::canonicalize;
 
 use super::{GitError, LineDiff, Repository};
-#[cfg(unix)]
-use crate::git::parse::path_from_git_bytes;
+use crate::git::parse::{path_from_git_bytes, path_from_git_stdout};
 use crate::git::{CommandError, PlumbingDiff};
 
 const TEMP_INDEX_PREFIX: &str = "worktrunk-temp-index-";
-
-fn path_from_git_stdout(stdout: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        let path = stdout.strip_suffix(b"\n").unwrap_or(stdout);
-        path_from_git_bytes(path)
-    }
-    #[cfg(not(unix))]
-    {
-        PathBuf::from(String::from_utf8_lossy(stdout).trim())
-    }
-}
 
 #[derive(Debug)]
 struct NumstatEntry {
@@ -444,10 +431,25 @@ impl<'a> WorkingTree<'a> {
             "--symbolic-full-name",
             "HEAD",
         ])?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut lines = stdout.lines();
+        let Some([is_inside, raw_toplevel, raw_git_dir, raw_head]) =
+            super::exact_output_lines::<4>(&output.stdout)
+        else {
+            if output.stdout.starts_with(b"true\n") {
+                return Ok(WorkingTreeGitInfo {
+                    is_inside: true,
+                    root: Some(self.root()?),
+                    git_dir: Some(self.git_dir()?),
+                    current_branch: if output.status.success() {
+                        Some(self.branch()?)
+                    } else {
+                        None
+                    },
+                });
+            }
+            return Ok(WorkingTreeGitInfo::default());
+        };
 
-        let is_inside = lines.next().is_some_and(|s| s.trim() == "true");
+        let is_inside = is_inside == b"true";
         if !is_inside {
             return Ok(WorkingTreeGitInfo::default());
         }
@@ -458,39 +460,38 @@ impl<'a> WorkingTree<'a> {
         // canonicalize of that line fails (e.g., pathological filesystem
         // state), fall back to `self.path` which is already canonicalized by
         // `worktree_at` and guaranteed inside the work tree.
-        let raw_toplevel = lines.next().unwrap_or("").trim();
-        let canonical = canonicalize(PathBuf::from(raw_toplevel)).unwrap_or(self.path.clone());
+        let canonical =
+            canonicalize(path_from_git_bytes(raw_toplevel)).unwrap_or(self.path.clone());
         super::WORKTREE_ROOTS
             .entry(self.path.clone())
             .or_insert_with(|| canonical.clone());
         let root = Some(canonical);
 
-        let git_dir = lines.next().and_then(|raw| {
-            let path = PathBuf::from(raw.trim());
+        let git_dir = {
+            let path = path_from_git_bytes(raw_git_dir);
             let absolute = if path.is_relative() {
                 self.path.join(&path)
             } else {
                 path
             };
-            let resolved = canonicalize(&absolute).ok()?;
-            super::GIT_DIRS
-                .entry(self.path.clone())
-                .or_insert_with(|| resolved.clone());
-            Some(resolved)
-        });
+            canonicalize(&absolute).ok().inspect(|resolved| {
+                super::GIT_DIRS
+                    .entry(self.path.clone())
+                    .or_insert_with(|| resolved.clone());
+            })
+        };
 
         // The `--symbolic-full-name HEAD` line is only trustworthy when the
         // batch succeeded. On unborn HEAD the line lands but is the literal
         // "HEAD" fallback — we can't tell that from detached HEAD without the
         // exit status.
         let current_branch = if output.status.success() {
-            lines.next().map(|raw| {
-                let branch = raw.trim().strip_prefix("refs/heads/").map(str::to_owned);
-                super::CURRENT_BRANCHES
-                    .entry(self.path.clone())
-                    .or_insert_with(|| branch.clone());
-                branch
-            })
+            let raw = String::from_utf8_lossy(raw_head);
+            let branch = raw.strip_prefix("refs/heads/").map(str::to_owned);
+            super::CURRENT_BRANCHES
+                .entry(self.path.clone())
+                .or_insert_with(|| branch.clone());
+            Some(branch)
         } else {
             None
         };
@@ -645,9 +646,9 @@ impl<'a> WorkingTree<'a> {
         match super::WORKTREE_ROOTS.entry(self.path.clone()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
             Entry::Vacant(e) => match self
-                .run_command(&["rev-parse", "--show-toplevel"])
+                .run_command_bytes(&["rev-parse", "--show-toplevel"])
                 .ok()
-                .map(|s| PathBuf::from(s.trim()))
+                .map(|stdout| path_from_git_stdout(&stdout))
                 .and_then(|p| canonicalize(&p).ok())
             {
                 Some(root) => Ok(e.insert(root).clone()),
