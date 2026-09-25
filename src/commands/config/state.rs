@@ -1765,10 +1765,10 @@ pub fn handle_vars_clear(
 /// Clear all branch markers. Used by `state clear marker --all` and
 /// `state clear --all`.
 ///
-/// `get_config_regexp` returns an empty string when no keys match (git exit 1)
-/// and `Err` for real config errors — both the listing step and each
-/// `unset_config` call propagate errors so user-initiated clears never lie
-/// about success.
+/// `config_regexp_entries` returns an empty list when Git reports no matches.
+/// It returns `Err` for real config errors. Both the listing step and each
+/// `unset_config` call propagate errors so user-initiated clears never report
+/// false success.
 fn clear_all_markers(repo: &Repository) -> anyhow::Result<usize> {
     clear_matching_config(repo, r"^worktrunk\.state\..+\.marker$")
 }
@@ -1785,7 +1785,7 @@ fn clear_matching_config(repo: &Repository, pattern: &str) -> anyhow::Result<usi
 
 /// Clear all vars entries across all branches (used by handle_state_clear_all).
 ///
-/// Enumerates keys via `get_config_regexp` (not `all_vars_entries`) so a
+/// Enumerates keys via `config_regexp_entries` (not `all_vars_entries`) so a
 /// config read failure surfaces as an error — the display-path helper
 /// absorbs errors as empty, which would silently report "cleared 0" here.
 fn clear_all_vars(repo: &Repository) -> anyhow::Result<usize> {

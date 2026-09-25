@@ -131,31 +131,11 @@ impl Repository {
         Ok(existed)
     }
 
-    /// Run `git config --get-regexp <pattern>` and return stdout.
-    ///
-    /// Distinguishes exit 1 (no matching keys — expected, returns empty
-    /// string) from real config errors (corrupt config, permission denied —
-    /// surfaced as `Err`). Use this instead of `run_command` + `.unwrap_or_default()`,
-    /// which conflates the two.
-    pub fn get_config_regexp(&self, pattern: &str) -> anyhow::Result<String> {
-        let args = ["config", "--get-regexp", pattern];
-        let output = self.run_command_output(&args)?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else if output.status.code() == Some(1) {
-            // Exit 1 = no keys matched the pattern
-            Ok(String::new())
-        } else {
-            Err(CommandError::from_failed_output("git", &args, &output).into())
-        }
-    }
-
     /// Read matching config entries without using newlines as record boundaries.
     ///
     /// `git config --null --get-regexp` emits `key\nvalue\0` records, so values
-    /// containing newlines remain intact. The ordinary output from
-    /// [`Self::get_config_regexp`] cannot distinguish those newlines from the
-    /// separators between entries.
+    /// containing newlines remain intact. Valueless keys are emitted as
+    /// `key\0` and represented with an empty value.
     pub fn config_regexp_entries(&self, pattern: &str) -> anyhow::Result<Vec<(String, String)>> {
         let args = ["config", "--null", "--get-regexp", pattern];
         let output = self.run_command_output(&args)?;
@@ -232,9 +212,8 @@ impl Repository {
             std::collections::BTreeMap<String, String>,
         > = std::collections::HashMap::new();
         for (config_key, value) in entries {
-            let Some((branch, key)) = parse_vars_config_key(&config_key) else {
-                continue;
-            };
+            let (branch, key) =
+                parse_vars_config_key(&config_key).expect("config key matched vars pattern");
             result
                 .entry(branch.to_string())
                 .or_default()
@@ -1074,17 +1053,17 @@ fn parse_branch_config_key(config_key: &str) -> Option<(&str, &str)> {
 
 /// Parse `git config --null --get-regexp` output.
 ///
-/// Each NUL-terminated record contains `key\nvalue`. Only the first newline
-/// separates the fields; later newlines are part of the value.
+/// Each NUL-terminated record contains `key\nvalue` or a valueless `key`.
+/// Only the first newline separates the fields; later newlines are part of
+/// the value.
 fn parse_config_regexp_z(stdout: &[u8]) -> Vec<(String, String)> {
     stdout
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
-        .filter_map(|entry| {
-            let separator = entry.iter().position(|byte| *byte == b'\n')?;
-            let key = String::from_utf8_lossy(&entry[..separator]).into_owned();
-            let value = String::from_utf8_lossy(&entry[separator + 1..]).into_owned();
-            Some((key, value))
+        .map(|entry| {
+            let text = String::from_utf8_lossy(entry);
+            let (key, value) = text.split_once('\n').unwrap_or((text.as_ref(), ""));
+            (key.to_string(), value.to_string())
         })
         .collect()
 }
@@ -1095,29 +1074,29 @@ mod tests {
     use crate::testing::TestRepo;
 
     #[test]
-    fn test_get_config_regexp_no_match_returns_empty() {
+    fn test_config_regexp_entries_no_match_returns_empty() {
         // Exit 1 from git config --get-regexp means "no keys matched" — must
-        // surface as Ok("") rather than an error so callers don't conflate
+        // surface as an empty list rather than an error so callers don't conflate
         // no-matches with real config failures.
         let test = TestRepo::with_initial_commit();
         let repo = Repository::at(test.root_path()).unwrap();
 
-        let output = repo
-            .get_config_regexp(r"^worktrunk\.state\..+\.marker$")
+        let entries = repo
+            .config_regexp_entries(r"^worktrunk\.state\..+\.marker$")
             .unwrap();
-        assert_eq!(output, "");
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn test_get_config_regexp_failure_is_command_error() {
+    fn test_config_regexp_entries_failure_is_command_error() {
         // A real failure (invalid pattern, exit 6) must surface as a typed
         // `CommandError` — unlike exit 1, which means "no keys matched".
         let test = TestRepo::with_initial_commit();
         let repo = Repository::at(test.root_path()).unwrap();
 
-        let err = repo.get_config_regexp("(").unwrap_err();
+        let err = repo.config_regexp_entries("(").unwrap_err();
         let cmd_err = CommandError::find_in(&err).expect("error should carry a CommandError");
-        assert_eq!(cmd_err.command_string(), "git config --get-regexp (");
+        assert_eq!(cmd_err.command_string(), "git config --null --get-regexp (");
     }
 
     #[test]
@@ -1147,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_config_regexp_returns_matches() {
+    fn test_config_regexp_entries_returns_matches() {
         let test = TestRepo::with_initial_commit();
         let repo = Repository::at(test.root_path()).unwrap();
 
@@ -1156,11 +1135,17 @@ mod tests {
         repo.set_config("worktrunk.state.bugfix.marker", r#"{"marker":"fix"}"#)
             .unwrap();
 
-        let output = repo
-            .get_config_regexp(r"^worktrunk\.state\..+\.marker$")
+        let entries = repo
+            .config_regexp_entries(r"^worktrunk\.state\..+\.marker$")
             .unwrap();
-        assert!(output.contains("worktrunk.state.feature.marker"));
-        assert!(output.contains("worktrunk.state.bugfix.marker"));
+        assert!(entries.contains(&(
+            "worktrunk.state.feature.marker".to_string(),
+            r#"{"marker":"wip"}"#.to_string()
+        )));
+        assert!(entries.contains(&(
+            "worktrunk.state.bugfix.marker".to_string(),
+            r#"{"marker":"fix"}"#.to_string()
+        )));
     }
 
     /// `mark_hint_shown` writes 1 on first call and increments on each

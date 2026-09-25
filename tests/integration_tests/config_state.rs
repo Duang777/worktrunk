@@ -2714,6 +2714,29 @@ fn test_vars_clear_all(repo: TestRepo) {
 }
 
 #[rstest]
+fn test_vars_clear_all_clears_valueless_key(repo: TestRepo) {
+    let config_path = repo.root_path().join(".git/config");
+    let mut config = std::fs::OpenOptions::new()
+        .append(true)
+        .open(config_path)
+        .unwrap();
+    writeln!(config, "\n[worktrunk \"state.main.vars\"]\n\tflag").unwrap();
+    drop(config);
+
+    let output = wt_state_cmd(&repo, "vars", "clear", &["--all"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let output = repo
+        .git_command()
+        .args(["config", "--get", "worktrunk.state.main.vars.flag"])
+        .run()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[rstest]
 fn test_vars_invalid_key(repo: TestRepo) {
     let output = wt_state_cmd(&repo, "vars", "set", &["foo.bar=value"])
         .output()
