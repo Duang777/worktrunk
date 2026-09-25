@@ -1380,7 +1380,9 @@ impl TempIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_initialized_submodules_from_status, path_from_git_stdout};
+    use super::has_initialized_submodules_from_status;
+    #[cfg(unix)]
+    use super::path_from_git_stdout;
     use crate::git::{LineDiff, Repository};
     use crate::shell_exec::Cmd;
     use crate::testing::TestRepo;
