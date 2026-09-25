@@ -8,21 +8,16 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 use super::{GitError, WorktreeInfo, finalize_worktree};
 
 #[cfg(unix)]
-fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+pub(crate) fn path_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(path.to_vec()))
 }
 
 #[cfg(not(unix))]
-fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+pub(crate) fn path_from_git_bytes(path: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
 impl WorktreeInfo {
-    #[cfg(test)]
-    pub(crate) fn parse_porcelain_list(output: &str) -> anyhow::Result<Vec<Self>> {
-        Self::parse_porcelain_fields(output.lines().map(str::as_bytes))
-    }
-
     pub(crate) fn parse_porcelain_list_z(output: &[u8]) -> anyhow::Result<Vec<Self>> {
         Self::parse_porcelain_fields(output.split(|byte| *byte == b'\0'))
     }
@@ -320,13 +315,13 @@ mod tests {
     }
 
     // ============================================================================
-    // WorktreeInfo::parse_porcelain_list Tests
+    // WorktreeInfo::parse_porcelain_list_z Tests
     // ============================================================================
 
     #[test]
     fn test_parse_porcelain_list_single_worktree() {
-        let output = "worktree /path/to/repo\nHEAD abc123\nbranch refs/heads/main\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo\0HEAD abc123\0branch refs/heads/main\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         assert_eq!(wt.path.to_str().unwrap(), "/path/to/repo");
         assert_eq!(wt.head, "abc123");
@@ -335,8 +330,8 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_list_multiple_worktrees() {
-        let output = "worktree /path/main\nHEAD aaa\nbranch refs/heads/main\n\nworktree /path/feature\nHEAD bbb\nbranch refs/heads/feature\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/main\0HEAD aaa\0branch refs/heads/main\0\0worktree /path/feature\0HEAD bbb\0branch refs/heads/feature\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [main_wt, feature_wt]: [WorktreeInfo; 2] = worktrees.try_into().unwrap();
         assert_eq!(main_wt.branch, Some("main".to_string()));
         assert_eq!(feature_wt.branch, Some("feature".to_string()));
@@ -344,16 +339,16 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_list_bare_repo() {
-        let output = "worktree /path/to/repo.git\nHEAD abc123\nbare\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo.git\0HEAD abc123\0bare\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         assert!(wt.bare);
     }
 
     #[test]
     fn test_parse_porcelain_list_detached() {
-        let output = "worktree /path/to/repo\nHEAD abc123\ndetached\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo\0HEAD abc123\0detached\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         assert!(wt.detached);
         assert!(wt.branch.is_none());
@@ -361,23 +356,23 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_list_locked() {
-        let output = "worktree /path/to/repo\nHEAD abc123\nbranch refs/heads/main\nlocked reason for lock\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo\0HEAD abc123\0branch refs/heads/main\0locked reason for lock\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         assert_eq!(wt.locked, Some("reason for lock".to_string()));
     }
 
     #[test]
     fn test_parse_porcelain_list_prunable() {
-        let output = "worktree /path/to/repo\nHEAD abc123\nbranch refs/heads/main\nprunable gitdir file missing\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo\0HEAD abc123\0branch refs/heads/main\0prunable gitdir file missing\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         assert_eq!(wt.prunable, Some("gitdir file missing".to_string()));
     }
 
     #[test]
     fn test_parse_porcelain_list_empty() {
-        let result = WorktreeInfo::parse_porcelain_list("");
+        let result = WorktreeInfo::parse_porcelain_list_z(b"");
         assert!(result.is_ok());
         let worktrees = result.unwrap();
         assert!(worktrees.is_empty());
@@ -386,8 +381,8 @@ mod tests {
     #[test]
     fn test_parse_porcelain_list_no_trailing_blank() {
         // Git output may not always end with a blank line
-        let output = "worktree /path/to/repo\nHEAD abc123\nbranch refs/heads/main";
-        let result = WorktreeInfo::parse_porcelain_list(output);
+        let output = b"worktree /path/to/repo\0HEAD abc123\0branch refs/heads/main";
+        let result = WorktreeInfo::parse_porcelain_list_z(output);
         assert!(result.is_ok());
         let worktrees = result.unwrap();
         assert_eq!(worktrees.len(), 1);
@@ -395,23 +390,23 @@ mod tests {
 
     #[test]
     fn test_parse_porcelain_list_missing_worktree_path() {
-        let output = "worktree\nHEAD abc123\n\n";
-        let result = WorktreeInfo::parse_porcelain_list(output);
+        let output = b"worktree\0HEAD abc123\0\0";
+        let result = WorktreeInfo::parse_porcelain_list_z(output);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_porcelain_list_missing_head_sha() {
-        let output = "worktree /path\nHEAD\n\n";
-        let result = WorktreeInfo::parse_porcelain_list(output);
+        let output = b"worktree /path\0HEAD\0\0";
+        let result = WorktreeInfo::parse_porcelain_list_z(output);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_porcelain_list_branch_without_refs_prefix() {
         // This can happen in some edge cases
-        let output = "worktree /path/to/repo\nHEAD abc123\nbranch main\n\n";
-        let worktrees = WorktreeInfo::parse_porcelain_list(output).unwrap();
+        let output = b"worktree /path/to/repo\0HEAD abc123\0branch main\0\0";
+        let worktrees = WorktreeInfo::parse_porcelain_list_z(output).unwrap();
         let [wt]: [WorktreeInfo; 1] = worktrees.try_into().unwrap();
         // Should use the branch name as-is when no refs/heads/ prefix
         assert_eq!(wt.branch, Some("main".to_string()));

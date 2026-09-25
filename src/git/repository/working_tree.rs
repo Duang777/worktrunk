@@ -13,9 +13,23 @@ use crate::shell_exec::Cmd;
 use dunce::canonicalize;
 
 use super::{GitError, LineDiff, Repository};
+#[cfg(unix)]
+use crate::git::parse::path_from_git_bytes;
 use crate::git::{CommandError, PlumbingDiff};
 
 const TEMP_INDEX_PREFIX: &str = "worktrunk-temp-index-";
+
+fn path_from_git_stdout(stdout: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        let path = stdout.strip_suffix(b"\n").unwrap_or(stdout);
+        path_from_git_bytes(path)
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(stdout).trim())
+    }
+}
 
 #[derive(Debug)]
 struct NumstatEntry {
@@ -336,11 +350,9 @@ impl<'a> WorkingTree<'a> {
     /// Run a git command in this worktree and return stdout without decoding paths.
     pub fn run_command_bytes(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
         let output = self.run_command_output(args)?;
-
         if !output.status.success() {
             return Err(CommandError::from_failed_output("git", args, &output).into());
         }
-
         Ok(output.stdout)
     }
 
@@ -653,8 +665,8 @@ impl<'a> WorkingTree<'a> {
         match super::GIT_DIRS.entry(self.path.clone()) {
             Entry::Occupied(e) => Ok(e.get().clone()),
             Entry::Vacant(e) => {
-                let stdout = self.run_command(&["rev-parse", "--git-dir"])?;
-                let path = PathBuf::from(stdout.trim());
+                let stdout = self.run_command_bytes(&["rev-parse", "--git-dir"])?;
+                let path = path_from_git_stdout(&stdout);
 
                 // Always canonicalize to resolve symlinks (e.g., /var -> /private/var on macOS)
                 let absolute_path = if path.is_relative() {
@@ -1368,10 +1380,22 @@ impl TempIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::has_initialized_submodules_from_status;
+    use super::{has_initialized_submodules_from_status, path_from_git_stdout};
     use crate::git::{LineDiff, Repository};
     use crate::shell_exec::Cmd;
     use crate::testing::TestRepo;
+
+    #[cfg(unix)]
+    #[test]
+    fn git_stdout_path_preserves_raw_bytes_and_removes_one_delimiter() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = path_from_git_stdout(b"/repo/.git/worktrees/linked-\xff\n\n");
+        assert_eq!(
+            path.as_os_str().as_bytes(),
+            b"/repo/.git/worktrees/linked-\xff\n"
+        );
+    }
 
     #[test]
     fn lock_reason_errors_when_locked_is_unreadable() {

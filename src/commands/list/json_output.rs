@@ -16,10 +16,10 @@
 //! - `worktree`: worktree-specific state (locked, prunable, etc.)
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use worktrunk::git::{GitRepoInfo, LineDiff, Repository};
 
 use super::ci_status::{CiSource, PrStatus, ReviewState};
@@ -33,7 +33,10 @@ pub struct JsonItem {
     pub branch: Option<String>,
 
     /// Filesystem path to the worktree
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_path_lossy"
+    )]
     pub path: Option<PathBuf>,
 
     /// Item kind: "worktree" or "branch"
@@ -128,6 +131,26 @@ pub struct JsonItem {
     /// Empty cells are omitted.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub columns: BTreeMap<String, String>,
+}
+
+fn serialize_optional_path_lossy<S>(
+    path: &Option<PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match path {
+        Some(path) => serialize_path_lossy(path, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+pub(super) fn serialize_path_lossy<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&path.to_string_lossy())
 }
 
 /// Commit information
@@ -600,6 +623,7 @@ pub fn to_json_items(
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
+    use serde::Serialize;
     use worktrunk::git::GitRepoProvider;
     use worktrunk::git::InProgressOperation;
 
@@ -613,6 +637,18 @@ mod tests {
     // ============================================================================
     // JsonDiff Tests
     // ============================================================================
+
+    #[test]
+    fn test_optional_path_serializer_handles_none() {
+        #[derive(Serialize)]
+        struct Value {
+            #[serde(serialize_with = "serialize_optional_path_lossy")]
+            path: Option<PathBuf>,
+        }
+
+        let json = serde_json::to_value(Value { path: None }).unwrap();
+        assert!(json["path"].is_null());
+    }
 
     #[test]
     fn test_json_diff_from_line_diff() {
