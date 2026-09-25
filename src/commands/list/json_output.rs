@@ -16,11 +16,13 @@
 //! - `worktree`: worktree-specific state (locked, prunable, etc.)
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Serialize, Serializer};
 use worktrunk::git::{GitRepoInfo, LineDiff, Repository};
+
+use crate::output::serialize_path_lossy;
 
 use super::ci_status::{CiSource, PrStatus, ReviewState};
 use super::custom_columns::ResolvedCustomColumn;
@@ -144,13 +146,6 @@ where
         Some(path) => serialize_path_lossy(path, serializer),
         None => serializer.serialize_none(),
     }
-}
-
-pub(super) fn serialize_path_lossy<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&path.to_string_lossy())
 }
 
 /// Commit information

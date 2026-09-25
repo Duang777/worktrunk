@@ -36,9 +36,11 @@ use worktrunk::git::{
     check_integration,
 };
 
+use crate::output::serialize_path_lossy;
+
 use super::ci_status::{CiSource, CiStatus, PrStatus, ReviewState};
 use super::custom_columns::ResolvedCustomColumn;
-use super::json_output::{JsonDiff, format_raw_symbols, serialize_path_lossy};
+use super::json_output::{JsonDiff, format_raw_symbols};
 use super::model::{BranchScope, Collected, ItemKind, ListItem, MainState, WorktreeData};
 
 /// Tri-state field encoding the absence rule (see module docs).
