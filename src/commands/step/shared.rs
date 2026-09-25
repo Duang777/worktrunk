@@ -231,11 +231,9 @@ fn list_ignored_entries(
         .split(|&byte| byte == 0)
         .filter(|entry| !entry.is_empty())
         .map(|entry| {
-            let is_dir = entry.ends_with(b"/");
-            let relative = if is_dir {
-                &entry[..entry.len() - 1]
-            } else {
-                entry
+            let (relative, is_dir) = match entry.strip_suffix(b"/") {
+                Some(relative) => (relative, true),
+                None => (entry, false),
             };
             (worktree_path.join(path_from_git_bytes(relative)), is_dir)
         })
