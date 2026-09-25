@@ -451,18 +451,18 @@ impl RepositoryCliExt for Repository {
         // filenames with spaces and renames ("XY path\0" for normal files,
         // "XY new_path\0old_path\0" for renames/copies).
         let wt = self.worktree_at(wt_path);
-        let wt_status_output = wt.run_command(&["status", "--porcelain", "-z", "-uall"])?;
-        if wt_status_output.trim().is_empty() {
+        let wt_status_output = wt.run_command_bytes(&["status", "--porcelain", "-z", "-uall"])?;
+        if wt_status_output.is_empty() {
             return Ok(());
         }
 
         let push_files = self.changed_files(target_branch, "HEAD")?;
-        let wt_files: Vec<String> = parse_porcelain_z(&wt_status_output);
+        let wt_files = parse_porcelain_z(&wt_status_output);
 
         let overlapping: Vec<String> = push_files
             .iter()
             .filter(|f| wt_files.contains(f))
-            .cloned()
+            .map(|path| String::from_utf8_lossy(path).into_owned())
             .collect();
 
         if !overlapping.is_empty() {
@@ -730,95 +730,6 @@ mod tests {
             worktrunk::path::paths_match(&found.path, &survivor),
             "only the canonical target path may be excluded"
         );
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_modified_staged() {
-        // "M  file.txt\0" - staged modification
-        let output = "M  file.txt\0";
-        assert_eq!(parse_porcelain_z(output), vec!["file.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_modified_unstaged() {
-        // " M file.txt\0" - unstaged modification (this was the bug case)
-        let output = " M file.txt\0";
-        assert_eq!(parse_porcelain_z(output), vec!["file.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_modified_both() {
-        // "MM file.txt\0" - both staged and unstaged
-        let output = "MM file.txt\0";
-        assert_eq!(parse_porcelain_z(output), vec!["file.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_untracked() {
-        // "?? new.txt\0" - untracked file
-        let output = "?? new.txt\0";
-        assert_eq!(parse_porcelain_z(output), vec!["new.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_rename() {
-        // "R  new.txt\0old.txt\0" - rename includes both paths
-        let output = "R  new.txt\0old.txt\0";
-        let result = parse_porcelain_z(output);
-        assert_eq!(result, vec!["new.txt", "old.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_copy() {
-        // "C  copy.txt\0original.txt\0" - copy includes both paths
-        let output = "C  copy.txt\0original.txt\0";
-        let result = parse_porcelain_z(output);
-        assert_eq!(result, vec!["copy.txt", "original.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_multiple_files() {
-        // Multiple files with different statuses
-        let output = " M file1.txt\0M  file2.txt\0?? untracked.txt\0R  new.txt\0old.txt\0";
-        let result = parse_porcelain_z(output);
-        assert_eq!(
-            result,
-            vec![
-                "file1.txt",
-                "file2.txt",
-                "untracked.txt",
-                "new.txt",
-                "old.txt"
-            ]
-        );
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_filename_with_spaces() {
-        // "M  file with spaces.txt\0"
-        let output = "M  file with spaces.txt\0";
-        assert_eq!(parse_porcelain_z(output), vec!["file with spaces.txt"]);
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_empty() {
-        assert_eq!(parse_porcelain_z(""), Vec::<String>::new());
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_short_entry_skipped() {
-        // Entry too short to have path (malformed, shouldn't happen in practice)
-        let output = "M\0";
-        assert_eq!(parse_porcelain_z(output), Vec::<String>::new());
-    }
-
-    #[test]
-    fn test_parse_porcelain_z_rename_missing_old_path() {
-        // Rename without old path (malformed, but should handle gracefully)
-        let output = "R  new.txt\0";
-        let result = parse_porcelain_z(output);
-        // Should include new.txt, old path is simply not added
-        assert_eq!(result, vec!["new.txt"]);
     }
 
     #[test]

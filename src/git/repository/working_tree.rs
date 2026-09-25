@@ -330,14 +330,18 @@ impl<'a> WorkingTree<'a> {
 
     /// Run a git command in this worktree and return stdout.
     pub fn run_command(&self, args: &[&str]) -> anyhow::Result<String> {
+        Ok(String::from_utf8_lossy(&self.run_command_bytes(args)?).into_owned())
+    }
+
+    /// Run a git command in this worktree and return stdout without decoding paths.
+    pub fn run_command_bytes(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
         let output = self.run_command_output(args)?;
 
         if !output.status.success() {
             return Err(CommandError::from_failed_output("git", args, &output).into());
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(stdout)
+        Ok(output.stdout)
     }
 
     /// Run a git command in this worktree and return the raw Output.
