@@ -1594,6 +1594,23 @@ mod tests {
         assert_eq!(info.current_branch, Some(Some("main".to_string())));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn prewarm_info_handles_worktree_path_containing_newline() {
+        let mut test = TestRepo::with_initial_commit();
+        let linked = test.root_path().parent().unwrap().join("linked-\nworktree");
+        let linked = test.add_worktree_at_path("feature", &linked);
+        let repo = Repository::at(&linked).unwrap();
+        let wt = repo.current_worktree();
+
+        let info = wt.prewarm_info().unwrap();
+
+        assert!(info.is_inside);
+        assert_eq!(info.root.as_deref(), Some(linked.as_path()));
+        assert!(info.git_dir.is_some());
+        assert_eq!(info.current_branch, Some(Some("feature".to_string())));
+    }
+
     #[test]
     fn head_sha_tracks_head_movement() {
         // `head_sha()` always reads fresh — a commit between calls must be
