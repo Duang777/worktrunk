@@ -8314,6 +8314,52 @@ fn test_switch_format_json_serializes_non_utf8_worktree_path(repo: TestRepo) {
     assert_eq!(json["path"].as_str(), Some(expected_path.as_ref()));
 }
 
+/// Background hooks need the exact worktree path across the runner's JSON
+/// boundary, since the runner uses it as both the repository root and cwd.
+#[cfg(target_os = "linux")]
+#[rstest]
+fn test_switch_background_hook_preserves_non_utf8_worktree_path(repo: TestRepo) {
+    use crate::common::configure_git_cmd;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::process::Command;
+
+    repo.write_project_config(r#"post-switch = "printf ran > hook-ran""#);
+
+    let worktree_path = repo
+        .root_path()
+        .parent()
+        .unwrap()
+        .join(OsString::from_vec(b"linked-\xff-hook".to_vec()));
+    let mut git = Command::new("git");
+    configure_git_cmd(&mut git);
+    let output = git
+        .args(["worktree", "add", "-b", "non-utf8-hook"])
+        .arg(&worktree_path)
+        .current_dir(repo.root_path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git worktree add should succeed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = repo
+        .wt_command()
+        .args(["switch", "non-utf8-hook", "--no-cd", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "wt switch should start the background hook; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let marker = worktree_path.join("hook-ran");
+    wait_for_file_content(&marker);
+}
+
 #[rstest]
 fn test_switch_format_json_already_at(mut repo: TestRepo) {
     // Create worktree and switch to it
