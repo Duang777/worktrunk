@@ -209,17 +209,35 @@ impl Repository {
     /// and the snapshot path. Does not populate the remote-branch cache.
     pub(super) fn scan_remote_branch_records(&self) -> anyhow::Result<Vec<RemoteBranch>> {
         let output = self.run_command(&["for-each-ref", REMOTE_BRANCH_FORMAT, "refs/remotes/"])?;
-        let remote_names: Vec<String> = self
-            .all_remote_urls()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
         let mut branches: Vec<RemoteBranch> = output
             .lines()
-            .filter_map(|line| parse_remote_branch_line(line, &remote_names))
+            .filter_map(|line| self.parse_remote_branch_line(line))
             .collect();
         branches.sort_by_key(|b| std::cmp::Reverse(b.committer_ts));
         Ok(branches)
+    }
+
+    /// Parse one record from the remote-branch scan.
+    ///
+    /// Skips `<remote>/HEAD` symrefs, which duplicate another ref and would
+    /// confuse callers that key by local name.
+    fn parse_remote_branch_line(&self, line: &str) -> Option<RemoteBranch> {
+        let mut parts = line.split(FIELD_SEP);
+        let short_name = parts.next()?;
+        let commit_sha = parts.next()?.to_string();
+        let committer_ts: i64 = parts.next()?.parse().ok()?;
+        let (remote_name, local_name) = self.split_remote_branch_name(short_name)?;
+        if local_name == "HEAD" {
+            return None;
+        }
+
+        Some(RemoteBranch {
+            short_name: short_name.to_string(),
+            commit_sha,
+            committer_ts,
+            remote_name,
+            local_name,
+        })
     }
 
     /// List all local branch names, sorted by most recent commit first.
@@ -399,42 +417,6 @@ fn parse_local_branch_line(line: &str) -> Option<LocalBranch> {
         commit_sha,
         committer_ts,
         upstream_short,
-    })
-}
-
-/// Parse one record from the remote-branch scan.
-///
-/// Skips `<remote>/HEAD` symrefs — they duplicate another ref and would
-/// confuse callers that key by local name.
-fn parse_remote_branch_line(line: &str, remote_names: &[String]) -> Option<RemoteBranch> {
-    let mut parts = line.split(FIELD_SEP);
-    let short_name = parts.next()?;
-    let commit_sha = parts.next()?.to_string();
-    let committer_ts: i64 = parts.next()?.parse().ok()?;
-
-    let configured_remote = remote_names
-        .iter()
-        .filter_map(|remote| {
-            short_name
-                .strip_prefix(remote)
-                .and_then(|suffix| suffix.strip_prefix('/'))
-                .map(|local_name| (remote.as_str(), local_name))
-        })
-        .max_by_key(|(remote, _)| remote.len());
-
-    // `<remote>/HEAD` is a symref to the remote's default branch; skip it.
-    // Fall back to the first slash for stale refs whose remote was deleted.
-    let (remote_name, local_name) = configured_remote.or_else(|| short_name.split_once('/'))?;
-    if local_name == "HEAD" {
-        return None;
-    }
-
-    Some(RemoteBranch {
-        short_name: short_name.to_string(),
-        commit_sha,
-        committer_ts,
-        remote_name: remote_name.to_string(),
-        local_name: local_name.to_string(),
     })
 }
 

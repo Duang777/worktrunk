@@ -39,8 +39,6 @@ use worktrunk::git::{
 use super::ci_status::{CiSource, CiStatus, PrStatus, ReviewState};
 use super::custom_columns::ResolvedCustomColumn;
 use super::json_output::{JsonDiff, format_raw_symbols};
-#[cfg(test)]
-use super::model::BranchScope;
 use super::model::{Collected, ItemKind, ListItem, MainState, WorktreeData};
 
 /// Tri-state field encoding the absence rule (see module docs).
@@ -1094,8 +1092,7 @@ mod tests {
 
     #[test]
     fn test_remote_row_splits_branch_and_remote() {
-        let mut item = item_with("origin/feature");
-        item.reclassify_as_branch(BranchScope::Remote, Some("origin".into()), "feature".into());
+        let item = ListItem::new_remote_branch("a".repeat(40), "origin".into(), "feature".into());
         let json = to_value(&convert(&item, Collected::default()));
         assert_eq!(json["branch"], "feature");
         assert_eq!(json["remote"], "origin");
@@ -1103,12 +1100,8 @@ mod tests {
 
     #[test]
     fn test_remote_row_preserves_slash_named_remote() {
-        let mut item = item_with("team/fork/feature");
-        item.reclassify_as_branch(
-            BranchScope::Remote,
-            Some("team/fork".into()),
-            "feature".into(),
-        );
+        let item =
+            ListItem::new_remote_branch("a".repeat(40), "team/fork".into(), "feature".into());
         let json = to_value(&convert(&item, Collected::default()));
         assert_eq!(json["branch"], "feature");
         assert_eq!(json["remote"], "team/fork");
@@ -1134,8 +1127,7 @@ mod tests {
         // default branch — the name check must compare the remote-stripped
         // "main", not the raw "origin/main", so it gets no self-referential
         // relation object.
-        let mut item = item_with("origin/main");
-        item.reclassify_as_branch(BranchScope::Remote, Some("origin".into()), "main".into());
+        let item = ListItem::new_remote_branch("a".repeat(40), "origin".into(), "main".into());
         let json = to_value(&convert(&item, Collected::default()));
         assert_eq!(json["branch"], "main");
         assert!(json.get("default_branch").is_none());

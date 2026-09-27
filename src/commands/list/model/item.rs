@@ -460,24 +460,10 @@ impl ListItem {
     /// invariant. The picker's removal morph reclassifies a throwaway clone
     /// (`build_morph_branch_row`), so the live row's `PickerRowId` is
     /// unaffected: a morphed row's previews stay under its worktree key.
-    pub(crate) fn reclassify_as_branch(
-        &mut self,
-        scope: BranchScope,
-        remote_name: Option<String>,
-        branch: String,
-    ) {
+    pub(crate) fn reclassify_as_branch(&mut self, branch: String) {
         let head = self.head().to_string();
-        self.branch_ref = match scope {
-            BranchScope::Local => BranchRef::local_branch(&branch, &head),
-            BranchScope::Remote => BranchRef::remote_branch(
-                remote_name
-                    .as_deref()
-                    .expect("remote branch reclassification requires a remote name"),
-                &branch,
-                &head,
-            ),
-        };
-        self.kind = ItemKind::Branch(scope);
+        self.branch_ref = BranchRef::local_branch(&branch, &head);
+        self.kind = ItemKind::Branch(BranchScope::Local);
     }
 
     pub fn branch(&self) -> Option<&str> {
@@ -1190,11 +1176,8 @@ mod tests {
         let mut item = ListItem::new_worktree(worktree_ref, WorktreeData::default());
         assert_eq!(item.id(), &worktree_id);
 
-        item.reclassify_as_branch(BranchScope::Remote, Some("origin".into()), "feature".into());
-        assert_eq!(
-            item.id(),
-            BranchRef::remote_branch("origin", "feature", "abc123").id()
-        );
+        item.reclassify_as_branch("feature".into());
+        assert_eq!(item.id(), BranchRef::local_branch("feature", "abc123").id());
     }
 
     #[test]
