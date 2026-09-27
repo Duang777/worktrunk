@@ -424,21 +424,10 @@ struct CheckOutcome {
 fn plan_if_removable(result: anyhow::Result<RemovalPlan>) -> anyhow::Result<Option<RemovalPlan>> {
     match result {
         Ok(plan) => Ok(Some(plan)),
-        Err(error)
-            if matches!(
-                error.downcast_ref::<GitError>(),
-                Some(
-                    GitError::UncommittedChanges { .. }
-                        | GitError::CannotRemoveMainWorktree
-                        | GitError::CannotRemoveDefaultBranch { .. }
-                        | GitError::WorktreeLocked { .. }
-                        | GitError::StaleWorktreeHoldsWork { .. }
-                )
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(error),
+        Err(error) => match error.downcast_ref::<GitError>() {
+            Some(GitError::WorktreePathNotOurs { .. }) | None => Err(error),
+            Some(_) => Ok(None),
+        },
     }
 }
 
