@@ -135,12 +135,16 @@ impl Repository {
     ///
     /// `git config --null --get-regexp` emits `key\nvalue\0` records, so values
     /// containing newlines remain intact. Valueless keys are emitted as
-    /// `key\0` and represented with an empty value.
+    /// `key\0` and represented with an empty value. When a key has multiple
+    /// values, the last value wins, matching the other config readers.
     pub fn config_regexp_entries(&self, pattern: &str) -> anyhow::Result<Vec<(String, String)>> {
         let args = ["config", "--null", "--get-regexp", pattern];
         let output = self.run_command_output(&args)?;
         if output.status.success() {
-            Ok(parse_config_regexp_z(&output.stdout))
+            Ok(super::parse_config_list_z(&output.stdout)
+                .into_iter()
+                .filter_map(|(key, values)| values.into_iter().last().map(|value| (key, value)))
+                .collect())
         } else if output.status.code() == Some(1) {
             Ok(Vec::new())
         } else {
@@ -1049,23 +1053,6 @@ fn parse_vars_config_key(config_key: &str) -> Option<(&str, &str)> {
 /// prefix they hold no `.`, so `rsplit_once` yields `None` and they're skipped.
 fn parse_branch_config_key(config_key: &str) -> Option<(&str, &str)> {
     config_key.strip_prefix("branch.")?.rsplit_once('.')
-}
-
-/// Parse `git config --null --get-regexp` output.
-///
-/// Each NUL-terminated record contains `key\nvalue` or a valueless `key`.
-/// Only the first newline separates the fields; later newlines are part of
-/// the value.
-fn parse_config_regexp_z(stdout: &[u8]) -> Vec<(String, String)> {
-    stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            let text = String::from_utf8_lossy(entry);
-            let (key, value) = text.split_once('\n').unwrap_or((text.as_ref(), ""));
-            (key.to_string(), value.to_string())
-        })
-        .collect()
 }
 
 #[cfg(test)]
