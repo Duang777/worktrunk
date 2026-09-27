@@ -1183,9 +1183,7 @@ pub fn execute_user_command(
 /// `hook_plan` is the frozen, approved hook set; an empty plan (`--no-hooks`,
 /// declined, or no project config) runs no project hooks. `pre-remove` /
 /// `post-remove` / `post-switch` execute only from it — the selection was
-/// frozen at the gate, never re-read. `user_config` is the matching command-entry
-/// snapshot used to render that plan; execution does not reload it after hooks
-/// or removal mutate the filesystem.
+/// frozen at the gate, never re-read.
 ///
 /// [`RemovalExecution::Silent`] (the TUI picker — this runs while skim owns
 /// the terminal) removes a `Worktree` plan inline with no progress/success
@@ -1203,7 +1201,6 @@ pub fn handle_remove_output(
     plan: &RemovalPlan,
     execution: RemovalExecution,
     hook_plan: &ApprovedHookPlan,
-    user_config: &UserConfig,
     quiet: bool,
     announcer: &mut HookAnnouncer<'_>,
 ) -> anyhow::Result<BranchFate> {
@@ -1232,7 +1229,6 @@ pub fn handle_remove_output(
                 removed_commit: removed_commit.as_deref(),
                 branch_checked_out_at: branch_checked_out_at.as_ref(),
                 hook_plan,
-                user_config,
                 execution,
             },
             announcer,
@@ -1427,6 +1423,10 @@ fn spawn_hooks_after_remove(
     // on it must not be spawned into it.
     announcer.mark_worktree_removed(ctx.worktree_path);
 
+    // The startup snapshot, not a reload: `pre-remove` and the removal itself
+    // may have rewritten the user config since the approval gate read it.
+    let config = repo.user_config();
+
     // When removing the current worktree, user cd's to main_path → use post_hook logic
     // (suppresses path if shell integration will cd there).
     // When removing a different worktree, user stays at cwd → use pre_hook logic
@@ -1444,8 +1444,7 @@ fn spawn_hooks_after_remove(
 
     // All hooks use remove_ctx for spawning: log files are named after the removed
     // branch since both post-remove and post-switch are consequences of that removal.
-    let remove_ctx =
-        CommandContext::new(repo, ctx.user_config, removed_branch, ctx.main_path, false);
+    let remove_ctx = CommandContext::new(repo, config, removed_branch, ctx.main_path, false);
 
     // `post-remove` is *about* the removed worktree (gone by now); it was
     // selected and frozen into `hook_plan` at the gate, anchored at the removed
@@ -1464,13 +1463,8 @@ fn spawn_hooks_after_remove(
     // the destination worktree (where the user landed) at the gate.
     if ctx.changed_directory {
         let dest_branch = repo.worktree_at(ctx.main_path).branch()?;
-        let switch_ctx = CommandContext::new(
-            repo,
-            ctx.user_config,
-            dest_branch.as_deref(),
-            ctx.main_path,
-            false,
-        );
+        let switch_ctx =
+            CommandContext::new(repo, config, dest_branch.as_deref(), ctx.main_path, false);
         register_planned(
             announcer,
             ctx.hook_plan,
@@ -1736,8 +1730,6 @@ struct WorktreeRemovalContext<'a> {
     /// `post-switch` execute only from this — no `.config/wt.toml` re-read,
     /// no `ProjectConfig` snapshot to thread.
     hook_plan: &'a ApprovedHookPlan,
-    /// The command-entry user-config snapshot paired with `hook_plan`.
-    user_config: &'a UserConfig,
     execution: RemovalExecution,
 }
 
@@ -1767,7 +1759,7 @@ fn execute_pre_remove_hooks_if_needed(
     let pre_remove_repo = Repository::at(ctx.worktree_path)?;
     let command_ctx = CommandContext::new(
         &pre_remove_repo,
-        ctx.user_config,
+        pre_remove_repo.user_config(),
         ctx.branch_name,
         ctx.worktree_path,
         false, // yes=false for CommandContext (not approval-related)

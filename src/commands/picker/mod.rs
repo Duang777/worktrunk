@@ -388,7 +388,6 @@ impl AltXRemover {
                     result,
                     RemovalExecution::Silent,
                     &plan,
-                    repo.user_config(),
                     /* quiet */ true,
                     &mut announcer,
                 )?;
