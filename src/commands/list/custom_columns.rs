@@ -15,13 +15,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use ansi_str::AnsiStr;
 use minijinja::Value;
 use worktrunk::config::{
     ListColumnConfig, template_environment, validate_list_column_template, vars_map_to_value,
 };
 use worktrunk::git::Repository;
 use worktrunk::path::to_posix_path;
+
+use crate::display::sanitize_table_cell;
 
 use super::model::ListItem;
 
@@ -185,7 +186,7 @@ pub fn expand_custom_columns(
                     return String::new();
                 };
                 match template.render(&context) {
-                    Ok(value) => sanitize_cell(&value),
+                    Ok(value) => sanitize_table_cell(&value),
                     Err(e) => {
                         tracing::debug!(name = %name, branch = ?branch, error = %e, "[{name}] render failed for row {branch:?}: {e}");
                         String::new()
@@ -196,22 +197,6 @@ pub fn expand_custom_columns(
     }
 }
 
-/// Flatten a rendered value to one trimmed line: ANSI escape sequences are
-/// removed, newlines and tabs become spaces, other control characters drop.
-fn sanitize_cell(value: &str) -> String {
-    value
-        .ansi_strip()
-        .chars()
-        .filter_map(|c| match c {
-            '\n' | '\r' | '\t' => Some(' '),
-            c if c.is_control() => None,
-            c => Some(c),
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,12 +204,12 @@ mod tests {
 
     #[test]
     fn test_sanitize_cell() {
-        assert_eq!(sanitize_cell("plain"), "plain");
-        assert_eq!(sanitize_cell("  padded  "), "padded");
-        assert_eq!(sanitize_cell("two\nlines\there"), "two lines here");
-        assert_eq!(sanitize_cell("bell\u{7}gone"), "bellgone");
-        assert_eq!(sanitize_cell("\u{1b}[31mred\u{1b}[0m"), "red");
-        assert_eq!(sanitize_cell("\n\n"), "");
+        assert_eq!(sanitize_table_cell("plain"), "plain");
+        assert_eq!(sanitize_table_cell("  padded  "), "padded");
+        assert_eq!(sanitize_table_cell("two\nlines\there"), "two lines here");
+        assert_eq!(sanitize_table_cell("bell\u{7}gone"), "bellgone");
+        assert_eq!(sanitize_table_cell("\u{1b}[31mred\u{1b}[0m"), "red");
+        assert_eq!(sanitize_table_cell("\n\n"), "");
     }
 
     fn column_config(template: &str) -> ListColumnConfig {

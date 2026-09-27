@@ -6,6 +6,7 @@
 
 use std::path::{Component, Path};
 
+use ansi_str::AnsiStr;
 use path_slash::PathExt as _;
 use worktrunk::path::format_path_for_display;
 use worktrunk::utils::epoch_now;
@@ -53,18 +54,19 @@ fn format_relative_time_impl(timestamp: i64, now: i64) -> String {
     "now".to_string()
 }
 
-fn escape_path_for_table(path: &str) -> String {
-    let mut escaped = String::with_capacity(path.len());
-    for ch in path.chars() {
-        if ch == '\\' {
-            escaped.push_str("\\\\");
-        } else if ch.is_control() {
-            escaped.extend(ch.escape_default());
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped
+/// Flatten a value to one trimmed table-cell line.
+pub(crate) fn sanitize_table_cell(value: &str) -> String {
+    value
+        .ansi_strip()
+        .chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Shorten a path relative to the main worktree.
@@ -83,7 +85,7 @@ pub(crate) fn shorten_path(path: &Path, main_worktree_path: &Path) -> String {
     // Try to compute relative path
     if let Some(relative) = pathdiff::diff_paths(path, main_worktree_path) {
         // Use forward slashes on all platforms (worktrunk's display convention).
-        let rendered = escape_path_for_table(&relative.to_slash_lossy());
+        let rendered = sanitize_table_cell(&relative.to_slash_lossy());
         // If relative path starts with "..", it's a sibling/ancestor
         // Otherwise prefix with "./" for clarity
         if relative.components().next() == Some(Component::ParentDir) {
@@ -170,13 +172,13 @@ mod tests {
         let with_control = PathBuf::from("/home/user/project-\nfeature");
         assert_eq!(
             shorten_path(&with_control, &main_worktree),
-            r"../project-\nfeature"
+            "../project- feature"
         );
 
         let with_backslash = PathBuf::from(r"/home/user/project-\nfeature");
         assert_eq!(
             shorten_path(&with_backslash, &main_worktree),
-            r"../project-\\nfeature"
+            r"../project-\nfeature"
         );
     }
 

@@ -144,8 +144,45 @@ fn test_list_preserves_worktree_path_with_newline(repo: TestRepo) {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(r"../linked-\nworktree"),
+        stdout.contains("../linked- worktree"),
         "the table should render the path on one line:\n{stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[rstest]
+fn test_list_preserves_literal_backslash_in_worktree_path(repo: TestRepo) {
+    let worktree_path = repo
+        .root_path()
+        .parent()
+        .unwrap()
+        .join(r"linked-\nworktree");
+    repo.git_command()
+        .args(["worktree", "add", "-b", "backslash-path"])
+        .arg(worktree_path.to_str().unwrap())
+        .run()
+        .unwrap();
+
+    let output = repo
+        .wt_command()
+        .arg("list")
+        .current_dir(repo.root_path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "wt list should succeed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r"../linked-\nworktree"),
+        "the table should display a literal backslash once:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains(r"../linked-\\nworktree"),
+        "the table should not double a literal backslash:\n{stdout}"
     );
 }
 

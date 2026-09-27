@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
-use super::{GitError, WorktreeInfo, finalize_worktree};
+use super::{GitError, WorktreeInfo};
 
 #[cfg(unix)]
 pub(crate) fn path_from_git_bytes(path: &[u8]) -> PathBuf {
@@ -36,7 +36,7 @@ impl WorktreeInfo {
         for line in fields {
             if line.is_empty() {
                 if let Some(wt) = current.take() {
-                    worktrees.push(finalize_worktree(wt));
+                    worktrees.push(wt);
                 }
                 continue;
             }
@@ -112,9 +112,8 @@ impl WorktreeInfo {
 
         // Push the last worktree if the output doesn't end with a blank line
         if let Some(wt) = current {
-            worktrees.push(finalize_worktree(wt));
+            worktrees.push(wt);
         }
-
         Ok(worktrees)
     }
 }
